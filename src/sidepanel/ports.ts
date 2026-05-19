@@ -22,8 +22,19 @@ export interface RuntimePort {
   openOptionsPage(): void;
 }
 
+// Result of probing a tab for read access. `ok` carries the current
+// selection. `needs_activation` means the tab is an ordinary http(s)
+// page but activeTab hasn't been granted for it yet — the user must
+// click the toolbar icon while on that tab. `restricted` means Chrome
+// never allows extensions to script this URL scheme (chrome://,
+// file://, Web Store, devtools, etc.).
+export type TabAccess =
+  | { kind: 'ok'; selection: string }
+  | { kind: 'needs_activation' }
+  | { kind: 'restricted' };
+
 export interface ScriptingPort {
-  getCurrentSelection(tabId: number): Promise<string>;
+  probe(tabId: number, url: string): Promise<TabAccess>;
 }
 
 export interface SidePanelPorts {

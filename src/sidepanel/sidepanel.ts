@@ -1,6 +1,7 @@
 import { mountSidePanel } from './controller.js';
-import type { SidePanelPorts, ActiveTab } from './ports.js';
+import type { SidePanelPorts, ActiveTab, TabAccess } from './ports.js';
 import { getConfig } from '../shared/settings.js';
+import { isRestrictedUrl } from '../shared/tab-access.js';
 import type { DispatchResult } from '../dispatcher/types.js';
 
 const ports: SidePanelPorts = {
@@ -37,15 +38,17 @@ const ports: SidePanelPorts = {
     },
   },
   scripting: {
-    async getCurrentSelection(tabId) {
+    async probe(tabId, url): Promise<TabAccess> {
+      if (isRestrictedUrl(url)) return { kind: 'restricted' };
       try {
         const [first] = await chrome.scripting.executeScript({
           target: { tabId },
           func: () => window.getSelection()?.toString() ?? '',
         });
-        return typeof first?.result === 'string' ? first.result : '';
+        const selection = typeof first?.result === 'string' ? first.result : '';
+        return { kind: 'ok', selection };
       } catch {
-        return '';
+        return { kind: 'needs_activation' };
       }
     },
   },

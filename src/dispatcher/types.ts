@@ -11,7 +11,14 @@ export type DispatchConfig = {
   chatId: string;
 };
 
-export type FailureReason = 'unauthorized' | 'bad_chat' | 'network' | 'rate_limited' | 'unknown';
+export type FailureReason =
+  | 'unauthorized'
+  | 'bad_chat'
+  | 'network'
+  | 'rate_limited'
+  | 'no_access'
+  | 'restricted_page'
+  | 'unknown';
 
 export type DispatchResult =
   | { ok: true; messageIds: number[] }

@@ -2,13 +2,13 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { getByRole, getByText, screen, within } from '@testing-library/dom';
 import { mountSidePanel } from '../../src/sidepanel/controller.js';
-import type { ActiveTab, SidePanelPorts } from '../../src/sidepanel/ports.js';
+import type { ActiveTab, SidePanelPorts, TabAccess } from '../../src/sidepanel/ports.js';
 import type { DispatchResult } from '../../src/dispatcher/types.js';
 import type { Config } from '../../src/shared/settings.js';
 
 interface StubState {
   tab: ActiveTab | null;
-  selection: string;
+  access: TabAccess;
   config: Partial<Config>;
   sendReply: DispatchResult | undefined;
   sentMessages: { type: 'send'; tabId: number; note: string }[];
@@ -20,7 +20,7 @@ interface StubState {
 function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state: StubState } {
   const state: StubState = {
     tab: { id: 7, title: 'Example post', url: 'https://example.com/post' },
-    selection: '',
+    access: { kind: 'ok', selection: '' },
     config: { botToken: 'TKN', chatId: 'CHAT' },
     sendReply: { ok: true, messageIds: [1] },
     sentMessages: [],
@@ -53,7 +53,7 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
       },
     },
     scripting: {
-      getCurrentSelection: () => Promise.resolve(state.selection),
+      probe: () => Promise.resolve(state.access),
     },
   };
   return { ports, state };
@@ -90,12 +90,39 @@ describe('side-panel controller', () => {
 
   it('shows the current selection in the chip on mount', async () => {
     const root = makeRoot();
-    const { ports } = makePorts({ selection: 'initial highlight' });
+    const { ports } = makePorts({ access: { kind: 'ok', selection: 'initial highlight' } });
 
     const { ready } = mountSidePanel(root, ports);
     await ready;
 
     expect(getByText(root, 'initial highlight')).toBeDefined();
+  });
+
+  it('shows an actionable hint when activeTab has not been granted for this tab', async () => {
+    const root = makeRoot();
+    const { ports } = makePorts({ access: { kind: 'needs_activation' } });
+
+    const { ready } = mountSidePanel(root, ports);
+    await ready;
+
+    const chip = root.querySelector('#selection-chip');
+    expect(chip?.textContent).toMatch(/toolbar icon/i);
+    expect(chip?.classList.contains('warn')).toBe(true);
+  });
+
+  it('shows a restricted-page hint when the tab URL scheme is unscriptable', async () => {
+    const root = makeRoot();
+    const { ports } = makePorts({
+      tab: { id: 7, title: 'Settings', url: 'chrome://settings' },
+      access: { kind: 'restricted' },
+    });
+
+    const { ready } = mountSidePanel(root, ports);
+    await ready;
+
+    const chip = root.querySelector('#selection-chip');
+    expect(chip?.textContent).toMatch(/can't be captured/i);
+    expect(chip?.classList.contains('warn')).toBe(true);
   });
 
   it('on Send: dispatches the note + tabId, shows "Sent", clears the textarea', async () => {
@@ -136,6 +163,38 @@ describe('side-panel controller', () => {
     const status = root.querySelector('#status');
     expect(status?.textContent).toContain('rate_limited');
     expect(status?.textContent).toContain('retry_after=5');
+  });
+
+  it('on no_access failure: shows the actionable toolbar-icon hint', async () => {
+    const user = userEvent.setup();
+    const root = makeRoot();
+    const { ports } = makePorts({
+      sendReply: { ok: false, reason: 'no_access', detail: 'irrelevant' },
+    });
+
+    const { ready } = mountSidePanel(root, ports);
+    await ready;
+
+    await user.click(getByRole(root, 'button', { name: /send/i }));
+
+    const status = root.querySelector('#status');
+    expect(status?.textContent).toMatch(/toolbar icon/i);
+  });
+
+  it('on restricted_page failure: shows the can\'t-be-captured hint', async () => {
+    const user = userEvent.setup();
+    const root = makeRoot();
+    const { ports } = makePorts({
+      sendReply: { ok: false, reason: 'restricted_page', detail: 'irrelevant' },
+    });
+
+    const { ready } = mountSidePanel(root, ports);
+    await ready;
+
+    await user.click(getByRole(root, 'button', { name: /send/i }));
+
+    const status = root.querySelector('#status');
+    expect(status?.textContent).toMatch(/can't be captured/i);
   });
 
   it('blocks Send when no bot token is configured and points the user to options', async () => {

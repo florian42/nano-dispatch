@@ -1,12 +1,17 @@
 import { configValid } from '../shared/settings.js';
 import type { DispatchResult } from '../dispatcher/types.js';
-import type { SidePanelPorts } from './ports.js';
+import type { SidePanelPorts, TabAccess } from './ports.js';
 import { SIDEPANEL_TEMPLATE } from './template.js';
 
 export interface SidePanelHandle {
   /** Resolves once the initial tab context has been fetched. */
   ready: Promise<void>;
 }
+
+const NEEDS_ACTIVATION_HINT =
+  'Click the nano-dispatch toolbar icon on this tab to enable it here.';
+const RESTRICTED_HINT =
+  "This page can't be captured (chrome://, Web Store, file://, etc.).";
 
 export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePanelHandle {
   root.innerHTML = SIDEPANEL_TEMPLATE;
@@ -15,7 +20,26 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
   let currentTabId: number | undefined;
   const drafts = new Map<number, string>();
 
-  function setSelection(text: string): void {
+  function renderAccess(access: TabAccess): void {
+    switch (access.kind) {
+      case 'ok':
+        renderSelection(access.selection);
+        return;
+      case 'needs_activation':
+        els.selection.textContent = NEEDS_ACTIVATION_HINT;
+        els.selection.classList.remove('empty');
+        els.selection.classList.add('warn');
+        return;
+      case 'restricted':
+        els.selection.textContent = RESTRICTED_HINT;
+        els.selection.classList.remove('empty');
+        els.selection.classList.add('warn');
+        return;
+    }
+  }
+
+  function renderSelection(text: string): void {
+    els.selection.classList.remove('warn');
     if (text.length === 0) {
       els.selection.textContent = 'no selection';
       els.selection.classList.add('empty');
@@ -39,7 +63,7 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
     els.url.textContent = tab.url;
     els.url.href = tab.url || '#';
     els.note.value = drafts.get(tab.id) ?? '';
-    setSelection(await ports.scripting.getCurrentSelection(tab.id));
+    renderAccess(await ports.scripting.probe(tab.id, tab.url));
   }
 
   ports.tabs.onActivated(() => {
@@ -110,9 +134,17 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
       setStatus(`Sent (${n} message${n === 1 ? '' : 's'}).`, 'ok');
       els.note.value = '';
       drafts.delete(tabId);
-    } else {
-      setStatus(`Failed: ${reply.reason} — ${reply.detail}`, 'error');
+      return;
     }
+    if (reply.reason === 'no_access') {
+      setStatus(`Failed: ${NEEDS_ACTIVATION_HINT}`, 'error');
+      return;
+    }
+    if (reply.reason === 'restricted_page') {
+      setStatus(`Failed: ${RESTRICTED_HINT}`, 'error');
+      return;
+    }
+    setStatus(`Failed: ${reply.reason} — ${reply.detail}`, 'error');
   }
 
   return { ready: refreshTabContext() };
