@@ -1,16 +1,77 @@
 # gitleaks config for nano-dispatch.
-# Extends the bundled default ruleset with an extra rule for Telegram bot tokens,
-# which is the specific credential this project handles.
+# Extends the bundled default ruleset (which already covers OpenAI keys,
+# Anthropic API+admin keys, and the canonical Telegram bot-token format)
+# with extra rules for credentials this project specifically handles or
+# that the default ruleset doesn't cover.
 
 [extend]
 useDefault = true
 
+# ── Telegram ────────────────────────────────────────────────────────
+# Catches Telegram bot tokens with a relaxed shape (no "telegr" keyword
+# proximity required, unlike the bundled rule). This project's whole
+# purpose is shipping these to a bot; a leak would be high-impact.
 [[rules]]
 id = "telegram-bot-token"
 description = "Telegram Bot API token"
-# Format: <numeric bot id>:<35-char base64url-ish secret>
 regex = '''[0-9]{8,12}:[A-Za-z0-9_-]{35}'''
 keywords = ["bot", "telegram", "TELEGRAM_BOT_TOKEN"]
+
+# ── Anthropic session keys ──────────────────────────────────────────
+# Defaults cover sk-ant-api03- and sk-ant-admin01- but not sid01.
+[[rules]]
+id = "anthropic-session-key"
+description = "Anthropic session key (sk-ant-sid01-…)"
+regex = '''\b(sk-ant-sid01-[A-Za-z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["sk-ant-sid01"]
+
+# ── Anthropic catch-all ─────────────────────────────────────────────
+# Defensive fallback in case Anthropic introduces a new key shape that
+# the specific rules above miss. Any "sk-ant-" prefix followed by a long
+# random-looking string is treated as a leak.
+[[rules]]
+id = "anthropic-key-generic"
+description = "Anthropic key with unknown subtype (sk-ant-…)"
+regex = '''\bsk-ant-[a-z0-9]+-[A-Za-z0-9_\-]{40,}\b'''
+keywords = ["sk-ant-"]
+
+# ── Ollama ──────────────────────────────────────────────────────────
+# Ollama doesn't have a canonical token format (auth is bearer-style for
+# Ollama Cloud / Turbo). Catch on keyword proximity to a long random
+# value, mirroring the structure of other keyword-anchored default rules.
+[[rules]]
+id = "ollama-api-token"
+description = "Ollama API key / bearer token"
+regex = '''(?i)(?:ollama)[\w.-]{0,25}[\s'"]{0,3}(?:=|:|=>|:=|,)[\s'"\x60]{0,5}([A-Za-z0-9_\-]{32,})(?:[\s'"\x60;]|\\[nr]|$)'''
+keywords = ["ollama"]
+
+# ── Generic AI-provider env-var safety net ──────────────────────────
+# Catches assignments like:
+#     OPENAI_API_KEY="…"
+#     ANTHROPIC_API_KEY = '…'
+#     CLAUDE_API_KEY: …
+#     TELEGRAM_BOT_TOKEN=…
+# Last line of defence if a key shape evolves and the specific rules
+# above stop matching. Length threshold + entropy filter on the value
+# keeps obvious placeholders ("changeme", "your-key-here") out.
+[[rules]]
+id = "ai-provider-env-assignment"
+description = "AI provider API key/token in an env-style assignment"
+regex = '''(?i)\b(?:OPENAI|ANTHROPIC|CLAUDE|CHATGPT|OLLAMA|TELEGRAM)_(?:API_KEY|API_TOKEN|TOKEN|SECRET|BOT_TOKEN)\b[\s'"]{0,3}(?:=|:|=>|:=)[\s'"\x60]{0,5}([A-Za-z0-9_\-:./+]{20,})'''
+entropy = 3.0
+secretGroup = 1
+keywords = [
+    "openai_api_key",
+    "anthropic_api_key",
+    "claude_api_key",
+    "chatgpt_api_key",
+    "ollama_api_key",
+    "telegram_bot_token",
+    "openai_token",
+    "anthropic_token",
+    "claude_token",
+    "ollama_token",
+]
 
 [allowlist]
 description = "Paths that contain illustrative examples, not real secrets."
