@@ -1,0 +1,56 @@
+# ── Secrets — NEVER commit ──────────────────────────────────────────
+# Telegram bot token, chat ID, or anything else that authenticates as me.
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+secrets/
+secrets.*
+credentials.*
+config.local.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+.telegram*
+bot-token*
+token.txt
+chat-id.txt
+
+# ── Node / build artifacts ──────────────────────────────────────────
+node_modules/
+dist/
+build/
+out/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.parcel-cache/
+.vite/
+.turbo/
+coverage/
+.nyc_output/
+
+# ── Chrome extension packaging ──────────────────────────────────────
+*.crx
+*.pem
+*.zip
+web-ext-artifacts/
+
+# ── Editor / OS noise ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Local-only Claude / agent scratch ───────────────────────────────
+.claude/settings.local.json
