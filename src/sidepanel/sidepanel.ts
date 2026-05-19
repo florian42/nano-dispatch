@@ -1,8 +1,7 @@
 import { mountSidePanel } from './controller.js';
-import type { SidePanelPorts, ActiveTab, SelectionEventPayload } from './ports.js';
+import type { SidePanelPorts, ActiveTab } from './ports.js';
 import { getConfig } from '../shared/settings.js';
 import type { DispatchResult } from '../dispatcher/types.js';
-import type { SelectionEvent } from '../shared/messages.js';
 
 const ports: SidePanelPorts = {
   tabs: {
@@ -25,19 +24,6 @@ const ports: SidePanelPorts = {
       });
     },
   },
-  draft: {
-    async get(tabId) {
-      const key = `draft:${tabId}`;
-      const data = await chrome.storage.session.get(key);
-      return typeof data[key] === 'string' ? data[key] : '';
-    },
-    async set(tabId, value) {
-      await chrome.storage.session.set({ [`draft:${tabId}`]: value });
-    },
-    async clear(tabId) {
-      await chrome.storage.session.remove(`draft:${tabId}`);
-    },
-  },
   config: {
     get: getConfig,
   },
@@ -45,15 +31,6 @@ const ports: SidePanelPorts = {
     async send(message) {
       const raw: unknown = await chrome.runtime.sendMessage(message);
       return isDispatchResult(raw) ? raw : undefined;
-    },
-    onSelectionEvent(cb) {
-      chrome.runtime.onMessage.addListener((msg: unknown, sender) => {
-        if (sender.id !== chrome.runtime.id) return;
-        if (!isSelectionEvent(msg)) return;
-        if (sender.tab?.id === undefined) return;
-        const payload: SelectionEventPayload = { tabId: sender.tab.id, text: msg.text };
-        cb(payload);
-      });
     },
     openOptionsPage() {
       void chrome.runtime.openOptionsPage();
@@ -75,12 +52,6 @@ const ports: SidePanelPorts = {
 };
 
 mountSidePanel(document.body, ports);
-
-function isSelectionEvent(v: unknown): v is SelectionEvent {
-  if (typeof v !== 'object' || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return o['type'] === 'selection' && typeof o['text'] === 'string';
-}
 
 function isDispatchResult(v: unknown): v is DispatchResult {
   if (typeof v !== 'object' || v === null) return false;

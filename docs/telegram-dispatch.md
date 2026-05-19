@@ -98,38 +98,41 @@ source: browser
 ## 4. Splitting
 
 If the assembled body exceeds **4096 characters** (Telegram's per-message
-limit), the dispatcher splits **section-anchored**:
+limit), the dispatcher chunks the composed body as a single character
+stream. See ADR-0005 for the algorithm rationale.
 
-- **Part 1** always carries: `source: browser`, the `(n/N)` marker (when
-  N ≥ 2), the `# <title>` line, the `<url>` line, the full `## Selection`
-  section (if present), the full `## Note` section (if present), and as much
-  of `## Page` as fits within the part-1 budget.
-- **Parts 2..N** are pure `## Page` continuation. The structural sections
-  (`## Selection`, `## Note`) are **not** repeated on later parts — they
-  belong to part 1's structural frame.
+Procedure:
+
+1. Compose the body via `composeBody`.
+2. If the result is ≤ 4096 chars, send as one message (no `(n/N)` marker).
+3. Otherwise, strip the leading `source: browser\n\n`, chunk the remainder
+   with a **4032-char budget**, and prepend `source: browser\n(n/N)\n\n`
+   to each chunk.
+
+The chunker prefers `\n\n` (paragraph) then `\n` (line) boundaries, but
+only when they sit in the upper half of the budget — otherwise it hard-
+cuts at the budget. This keeps part 1 from being truncated to "frame only"
+when the page body has no internal paragraph breaks.
 
 Rules:
 
 1. Per-part header budget is fixed at **64 chars** (`source: browser\n(n/N)\n\n`
    even at N=99 fits comfortably). Effective body budget per part = **4032**.
-2. Prefer splitting on paragraph boundaries (blank lines) within `## Page`.
-3. Fall back to character boundaries if a single paragraph exceeds the
-   budget.
-4. The `source: browser` tag is repeated on every part so each chunk is
+2. The `source: browser` tag is repeated on every part so each chunk is
    independently identifiable in the chat.
-5. The `(n/N)` marker appears **only when N ≥ 2**. Single-part sends do not
+3. The `(n/N)` marker appears **only when N ≥ 2**. Single-part sends do not
    carry it.
-6. **No trailing `(end)` marker.** `(n/N)` with `n == N` already signals the
+4. **No trailing `(end)` marker.** `(n/N)` with `n == N` already signals the
    last part; a redundant marker adds noise.
 
 Parts are sent **sequentially**, not in parallel — order matters for the
 reader, and Telegram's rate limits are friendlier to serial sends.
 
-**Degenerate case:** if the headers + Selection + Note alone exceed the
-part-1 budget (e.g. a 5000-char user selection), the Selection or Note
-sections themselves may split across parts. This is rare; the dispatcher
-does the simplest possible character-boundary split rather than refusing.
-"Weird input, weird output, still arrives" is the chosen behaviour.
+Because the frame (`# Title`, `<url>`, `## Selection`, `## Note`,
+`## Page`) sits at the top of the composed body, it naturally lands in
+part 1 and is never repeated. Pathological inputs (e.g. a 6000-char
+selection) still deliver: the chunker keeps cutting at the budget until
+every part is ≤ 4096 chars.
 
 ---
 
@@ -279,17 +282,16 @@ OWASP browser-extension cheat-sheet item: "Avoid using `eval()` and
 
 ### 7.5 Options UI
 
-- Render the token field as `<input type="password">` with an optional
-  "Reveal" toggle.
+- Render the token field as `<input type="password">`.
 - Do not echo the token elsewhere in the UI (no "saved: 1234…abcd" preview).
 - On dispatch errors, surface the `reason` discriminant, not the underlying
   Telegram response body.
-- **"Test connection" button** is permitted and recommended. It calls
-  `getMe` + `getChat` and displays only **public, API-derived** metadata —
-  the bot's `username` (the `@handle`, already public) and the chat's
-  `title` / `first_name`. It must never display, echo, or hint at the token.
-  The verification panel renders separately from the token input to avoid
-  any "saved-token confirmation" pattern.
+- No in-options "Test connection" verifier — the first real Send returns
+  the same mapped `reason` discriminants and is the supported diagnostic
+  path. (See ADR-0007.) If a future iteration re-introduces a verifier, it
+  must display only public API-derived metadata (bot `username`, chat
+  `title`/`first_name`) and never echo or hint at the token, with the
+  verification rendered in a panel separate from the token input.
 
 ---
 

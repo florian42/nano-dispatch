@@ -8,14 +8,12 @@ export interface SidePanelHandle {
   ready: Promise<void>;
 }
 
-const DRAFT_DEBOUNCE_MS = 250;
-
 export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePanelHandle {
   root.innerHTML = SIDEPANEL_TEMPLATE;
   const els = resolve(root);
 
   let currentTabId: number | undefined;
-  let draftTimer: ReturnType<typeof setTimeout> | null = null;
+  const drafts = new Map<number, string>();
 
   function setSelection(text: string): void {
     if (text.length === 0) {
@@ -40,14 +38,9 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
     els.title.textContent = tab.title;
     els.url.textContent = tab.url;
     els.url.href = tab.url || '#';
-    els.note.value = await ports.draft.get(tab.id);
+    els.note.value = drafts.get(tab.id) ?? '';
     setSelection(await ports.scripting.getCurrentSelection(tab.id));
   }
-
-  ports.runtime.onSelectionEvent(({ tabId, text }) => {
-    if (tabId !== currentTabId) return;
-    setSelection(text);
-  });
 
   ports.tabs.onActivated(() => {
     void refreshTabContext();
@@ -61,12 +54,9 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
   });
 
   els.note.addEventListener('input', () => {
-    if (draftTimer !== null) clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => {
-      if (currentTabId !== undefined) {
-        void ports.draft.set(currentTabId, els.note.value);
-      }
-    }, DRAFT_DEBOUNCE_MS);
+    if (currentTabId !== undefined) {
+      drafts.set(currentTabId, els.note.value);
+    }
   });
 
   els.note.addEventListener('keydown', (e) => {
@@ -119,7 +109,7 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
       const n = reply.messageIds.length;
       setStatus(`Sent (${n} message${n === 1 ? '' : 's'}).`, 'ok');
       els.note.value = '';
-      void ports.draft.clear(tabId);
+      drafts.delete(tabId);
     } else {
       setStatus(`Failed: ${reply.reason} — ${reply.detail}`, 'error');
     }

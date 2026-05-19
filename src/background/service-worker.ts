@@ -32,12 +32,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void chrome.storage.session.remove(`draft:${tabId}`).catch(() => {
-    /* ignore */
-  });
-});
-
 async function handleSend(req: SendRequest): Promise<DispatchResult> {
   const cfg = await getConfig();
   if (!configValid(cfg)) {

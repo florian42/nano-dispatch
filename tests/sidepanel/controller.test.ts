@@ -1,24 +1,18 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { getByRole, getByText, screen, within } from '@testing-library/dom';
 import { mountSidePanel } from '../../src/sidepanel/controller.js';
-import type {
-  ActiveTab,
-  SelectionEventPayload,
-  SidePanelPorts,
-} from '../../src/sidepanel/ports.js';
+import type { ActiveTab, SidePanelPorts } from '../../src/sidepanel/ports.js';
 import type { DispatchResult } from '../../src/dispatcher/types.js';
 import type { Config } from '../../src/shared/settings.js';
 
 interface StubState {
   tab: ActiveTab | null;
   selection: string;
-  draftByTab: Map<number, string>;
   config: Partial<Config>;
   sendReply: DispatchResult | undefined;
   sentMessages: { type: 'send'; tabId: number; note: string }[];
   openOptionsCalls: number;
-  selectionListener: ((e: SelectionEventPayload) => void) | null;
   activatedListener: (() => void) | null;
   updatedListener: ((tabId: number, change: { title?: string; url?: string }) => void) | null;
 }
@@ -27,12 +21,10 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
   const state: StubState = {
     tab: { id: 7, title: 'Example post', url: 'https://example.com/post' },
     selection: '',
-    draftByTab: new Map(),
     config: { botToken: 'TKN', chatId: 'CHAT' },
     sendReply: { ok: true, messageIds: [1] },
     sentMessages: [],
     openOptionsCalls: 0,
-    selectionListener: null,
     activatedListener: null,
     updatedListener: null,
     ...initial,
@@ -48,17 +40,6 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
         state.updatedListener = cb;
       },
     },
-    draft: {
-      get: (tabId) => Promise.resolve(state.draftByTab.get(tabId) ?? ''),
-      set: (tabId, value) => {
-        state.draftByTab.set(tabId, value);
-        return Promise.resolve();
-      },
-      clear: (tabId) => {
-        state.draftByTab.delete(tabId);
-        return Promise.resolve();
-      },
-    },
     config: {
       get: () => Promise.resolve(state.config),
     },
@@ -66,9 +47,6 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
       send: (msg) => {
         state.sentMessages.push(msg);
         return Promise.resolve(state.sendReply);
-      },
-      onSelectionEvent(cb) {
-        state.selectionListener = cb;
       },
       openOptionsPage() {
         state.openOptionsCalls += 1;
@@ -110,48 +88,20 @@ describe('side-panel controller', () => {
     expect(getByText(root, 'no selection')).toBeDefined();
   });
 
-  it('shows the live selection in the chip and replaces it on a matching selection event', async () => {
+  it('shows the current selection in the chip on mount', async () => {
     const root = makeRoot();
-    const { ports, state } = makePorts({ selection: 'initial highlight' });
+    const { ports } = makePorts({ selection: 'initial highlight' });
 
     const { ready } = mountSidePanel(root, ports);
     await ready;
 
     expect(getByText(root, 'initial highlight')).toBeDefined();
-
-    state.selectionListener?.({ tabId: 7, text: 'newer highlight' });
-    expect(getByText(root, 'newer highlight')).toBeDefined();
-    expect(() => getByText(root, 'initial highlight')).toThrow();
   });
 
-  it('ignores selection events from a different tab', async () => {
-    const root = makeRoot();
-    const { ports, state } = makePorts({ selection: 'live text' });
-
-    const { ready } = mountSidePanel(root, ports);
-    await ready;
-
-    state.selectionListener?.({ tabId: 999, text: 'other tab text' });
-    expect(getByText(root, 'live text')).toBeDefined();
-    expect(() => getByText(root, 'other tab text')).toThrow();
-  });
-
-  it('restores the persisted draft note for the active tab', async () => {
-    const root = makeRoot();
-    const { ports } = makePorts({ draftByTab: new Map([[7, 'half-written thought']]) });
-
-    const { ready } = mountSidePanel(root, ports);
-    await ready;
-
-    const textarea = root.querySelector<HTMLTextAreaElement>('#note-input');
-    expect(textarea?.value).toBe('half-written thought');
-  });
-
-  it('on Send: dispatches the note + tabId, shows "Sent", clears the textarea and the draft', async () => {
+  it('on Send: dispatches the note + tabId, shows "Sent", clears the textarea', async () => {
     const user = userEvent.setup();
     const root = makeRoot();
     const { ports, state } = makePorts({
-      draftByTab: new Map([[7, 'old draft']]),
       sendReply: { ok: true, messageIds: [42, 43] },
     });
 
@@ -159,17 +109,15 @@ describe('side-panel controller', () => {
     await ready;
 
     const textarea = root.querySelector<HTMLTextAreaElement>('#note-input')!;
-    await user.clear(textarea);
     await user.type(textarea, 'sending this');
     await user.click(getByRole(root, 'button', { name: /send/i }));
 
     expect(state.sentMessages).toEqual([{ type: 'send', tabId: 7, note: 'sending this' }]);
     expect(textarea.value).toBe('');
-    expect(state.draftByTab.has(7)).toBe(false);
     expect(getByText(root, /Sent \(2 messages\)/)).toBeDefined();
   });
 
-  it('on Send failure: shows the reason+detail and does NOT clear the textarea or draft', async () => {
+  it('on Send failure: shows the reason+detail and does NOT clear the textarea', async () => {
     const user = userEvent.setup();
     const root = makeRoot();
     const { ports, state } = makePorts({
@@ -220,8 +168,8 @@ describe('side-panel controller', () => {
     expect(state.sentMessages).toEqual([{ type: 'send', tabId: 7, note: 'shortcut send' }]);
   });
 
-  it('persists the draft note after the debounce window when the user types', async () => {
-    vi.useFakeTimers();
+  it('keeps each tab’s draft in memory while the panel is open', async () => {
+    const user = userEvent.setup();
     const root = makeRoot();
     const { ports, state } = makePorts();
 
@@ -229,12 +177,21 @@ describe('side-panel controller', () => {
     await ready;
 
     const textarea = root.querySelector<HTMLTextAreaElement>('#note-input')!;
-    textarea.value = 'still typing';
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    await user.type(textarea, 'tab 7 draft');
 
-    expect(state.draftByTab.get(7)).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(300);
-    expect(state.draftByTab.get(7)).toBe('still typing');
+    // Switch to a different tab.
+    state.tab = { id: 9, title: 'Other', url: 'https://example.com/other' };
+    state.activatedListener?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(textarea.value).toBe('');
+
+    // Switch back; the original draft is restored.
+    state.tab = { id: 7, title: 'Example post', url: 'https://example.com/post' };
+    state.activatedListener?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(textarea.value).toBe('tab 7 draft');
   });
 
   it('clicking "Configure bot…" opens the options page', async () => {
@@ -267,7 +224,6 @@ describe('side-panel controller', () => {
   });
 
   it('does not leak between tests (smoke check on the screen helper)', () => {
-    // Each beforeEach wipes document.body; the global screen helper sees nothing left over.
     expect(screen.queryByText('Example post')).toBeNull();
   });
 });

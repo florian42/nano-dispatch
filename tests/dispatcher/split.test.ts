@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { splitForTelegram, TELEGRAM_LIMIT } from '../../src/dispatcher/split.js';
-import { composeBody } from '../../src/dispatcher/compose.js';
+import { composeBody, composeForTelegram, TELEGRAM_LIMIT } from '../../src/dispatcher/compose.js';
 
-describe('splitForTelegram', () => {
+describe('composeForTelegram', () => {
   const base = {
     url: 'https://example.com/post',
     title: 'Hello',
@@ -10,7 +9,7 @@ describe('splitForTelegram', () => {
   };
 
   it('returns a single part identical to composeBody when under the limit', () => {
-    const parts = splitForTelegram({ ...base, selection: 'q', note: 'n' });
+    const parts = composeForTelegram({ ...base, selection: 'q', note: 'n' });
     expect(parts).toHaveLength(1);
     expect(parts[0]).toBe(composeBody({ ...base, selection: 'q', note: 'n' }));
     expect(parts[0]).not.toMatch(/\(\d+\/\d+\)/);
@@ -19,7 +18,7 @@ describe('splitForTelegram', () => {
   it('splits long bodyHtml into ordered parts under the limit, each tagged with (n/N)', () => {
     const para = 'lorem ipsum dolor sit amet '.repeat(40); // ~1080 chars
     const longBody = Array.from({ length: 10 }, () => para).join('\n\n'); // ~10800 chars
-    const parts = splitForTelegram({ ...base, bodyHtml: longBody });
+    const parts = composeForTelegram({ ...base, bodyHtml: longBody });
 
     expect(parts.length).toBeGreaterThan(1);
     const N = parts.length;
@@ -31,7 +30,7 @@ describe('splitForTelegram', () => {
 
   it('places the full structural frame only in part 1; parts 2..N are pure page continuation', () => {
     const longPage = 'paragraph '.repeat(2000); // ~20000 chars, no \n\n
-    const parts = splitForTelegram({
+    const parts = composeForTelegram({
       ...base,
       selection: 'the quote',
       note: 'the note',
@@ -58,7 +57,7 @@ describe('splitForTelegram', () => {
     const paraA = 'A'.repeat(2500);
     const paraB = 'B'.repeat(2500);
     const paraC = 'C'.repeat(2500);
-    const parts = splitForTelegram({
+    const parts = composeForTelegram({
       ...base,
       bodyHtml: `${paraA}\n\n${paraB}\n\n${paraC}`,
     });

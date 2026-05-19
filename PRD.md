@@ -2,14 +2,11 @@
 
 A Chrome browser extension that dispatches the current page's context plus a personal note to a Telegram bot (`nanoclaw`) from a sidebar UI. One-way send only.
 
-> **Implementation status (2026-05-19).** As-built deviates from this PRD in
-> one notable place: the Readability + Turndown extraction pipeline (User
-> Stories #25 and #26, plus the Page Capture module) was dropped in favour
-> of sending `document.body.innerHTML` verbatim. See
-> [`docs/adr/0006-raw-html-capture.md`](docs/adr/0006-raw-html-capture.md)
-> for the trade. Other ADRs in `docs/adr/` cover smaller divergences.
-> User stories #25 and #26 below are kept as historical record of the
-> original intent.
+> ADRs in `docs/adr/` carry the historical record of decisions taken
+> after this PRD was drafted (raw HTML capture, simplified splitter,
+> dropped per-tab draft persistence, dropped live selection streaming,
+> dropped options Test-connection button). The PRD below reflects the
+> as-built shape.
 
 ## Problem Statement
 
@@ -17,13 +14,13 @@ When I'm reading something in the browser — an article, a docs page, a thread 
 
 ## Solution
 
-A Chrome extension that lives in the browser side panel. While I read, the sidebar continuously shows:
+A Chrome extension that lives in the browser side panel. While I read, the sidebar shows:
 
 - the page I'm on (title + URL),
-- whatever I've highlighted on the page,
+- the current highlight (read once when the panel opens or when I switch tabs),
 - a textarea for a note I write myself.
 
-A "Send" button packages all three into a single Telegram message and pushes it to my `nanoclaw` bot. The page content is converted to Markdown (not raw HTML) before sending, so the downstream agent reading the message gets a token-efficient, well-structured representation instead of DOM noise. It's one-direction only: the extension sends, it does not read replies or listen for bot responses.
+A "Send" button packages all three plus the page's HTML body into one Telegram message (split across messages if it exceeds 4096 chars) and pushes it to my `nanoclaw` bot. It's one-direction only: the extension sends, it does not read replies or listen for bot responses.
 
 A small options page lets me paste my bot token and chat ID once.
 
@@ -32,13 +29,13 @@ A small options page lets me paste my bot token and chat ID once.
 1. As a reader, I want a sidebar that opens alongside the page I'm reading, so that I can compose and send a dispatch without leaving the page.
 2. As a reader, I want the sidebar to always show the current tab's title and URL, so that I can confirm what's being sent.
 3. As a reader, I want the sidebar to update its page context when I switch tabs, so that the dispatch always matches the page I'm looking at.
-4. As a reader, I want my current highlight on the page to appear in the sidebar in near-real time, so that I can see what selection will be included before I send.
+4. As a reader, I want the sidebar to read and display my current highlight when I open it or switch tabs, so that I can see what selection will be included before I send.
 5. As a reader, I want a textarea where I can write a personal note, so that I can add commentary or instructions for myself in the Telegram message.
 6. As a reader, I want a "Send" button that ships page title + URL + selection + my note to my Telegram bot in a single message, so that I get one self-contained record in my chat.
 7. As a reader, I want the textarea to be cleared after a successful send, so that I can immediately compose another dispatch without manual cleanup.
 8. As a reader, I want a visible status line (sending / sent / failed with reason), so that I know whether the dispatch actually made it.
 9. As a reader, I want a keyboard shortcut to send (Cmd/Ctrl+Enter from the textarea), so that I can dispatch without reaching for the mouse.
-10. As a reader, I want the sidebar to remember my draft note per-tab while the tab is open, so that switching away and back doesn't lose what I was typing.
+10. As a reader, I want my in-progress note for each tab to stick around while the side panel stays open, so that I can switch tabs and come back without losing what I was typing. (Drafts live in memory only — closing the panel discards them.)
 11. As a reader, I want to be able to send even without a highlighted selection, so that I can dispatch a page + note alone.
 12. As a reader, I want to be able to send even without a note, so that I can dispatch just a page + selection when the highlight speaks for itself.
 13. As a reader, I want long page content and long selections to be sent without being silently truncated, so that I don't lose information mid-message.
@@ -53,9 +50,7 @@ A small options page lets me paste my bot token and chat ID once.
 22. As a user, I want the extension to work on standard `http(s)://` pages, so that any normal article or docs page is dispatchable.
 23. As a user, I want a graceful "this page can't be captured" message on restricted pages (chrome://, web store, PDF viewer), so that I'm not confused when the sidebar can't read the page.
 24. As a user, I want the extension to work without an external server — just the extension talking to Telegram directly — so that there's no infrastructure for me to operate.
-25. ~~As a user whose Telegram bot is consumed by an LLM agent, I want the page content sent as Markdown rather than HTML, so that the agent receives a compact, well-structured payload instead of paying token cost for tag soup.~~ *(Not implemented — see ADR-0006.)*
-26. ~~As a user whose Telegram bot is consumed by an LLM agent, I want the page content stripped of boilerplate (nav, footers, ads, scripts) before conversion, so that the agent sees the article body and not the chrome around it.~~ *(Not implemented — see ADR-0006.)*
-27. As a user whose Telegram bot is consumed by an LLM agent, I want every dispatch to carry a short machine-readable marker identifying it as having come from the browser extension, so that the agent can route or label browser-originated messages distinctly from other inputs to the bot.
+25. As a user whose Telegram bot is consumed by an LLM agent, I want every dispatch to carry a short machine-readable marker identifying it as having come from the browser extension, so that the agent can route or label browser-originated messages distinctly from other inputs to the bot.
 
 ## Implementation Decisions
 
@@ -66,71 +61,47 @@ A small options page lets me paste my bot token and chat ID once.
 
 ### Architecture overview
 
-Four runtime surfaces:
+Three runtime surfaces:
 
-- **Side panel** (HTML/JS) — the user-facing UI rendered via Chrome's `chrome.sidePanel` API.
-- **Selection-stream content script** — declared in `content_scripts`, runs automatically on every `http(s)` page. Top frame only. Does one thing: listens to `selectionchange` (debounced ~150 ms) and posts the current selection text to the side panel. No DOM mutation, no token access, no `fetch`. See "Selection streaming" below.
-- **Capture content script** — heavier extractor (Readability + Turndown) injected on demand via `chrome.scripting.executeScript` when the user presses Send. Rides the user-gesture path; not always-on. *(Superseded by ADR-0006: capture is now a single inline `func` in the service worker that returns `document.body.innerHTML`. No separate capture content script.)*
+- **Side panel** (HTML/JS) — the user-facing UI rendered via Chrome's `chrome.sidePanel` API. Reads the current highlight via a one-shot `scripting.executeScript` on mount and on tab change.
 - **Service worker** — orchestrates: receives "send" from the side panel, requests a capture from the active tab, hands the payload to the dispatcher, reports status back to the side panel.
 - **Options page** — for bot token + chat ID configuration.
+
+No always-on content script. Capture and selection reads both ride the user-gesture path via `activeTab` + `scripting.executeScript`.
 
 ### Modules
 
 - **Telegram dispatcher** (deep). Single entry point `dispatch(payload, config)`:
-  - `payload`: `{ url, title, selection?, note? }`
+  - `payload`: `{ url, title, bodyHtml, selection?, note? }`
   - `config`: `{ botToken, chatId }`
   - Returns a discriminated result: `{ ok: true, messageIds: number[] }` or `{ ok: false, reason: 'unauthorized' | 'bad_chat' | 'network' | 'rate_limited' | 'unknown', detail: string }`.
   - Responsible for: composing the message body, splitting on Telegram's 4096-character limit into multiple ordered messages, calling `api.telegram.org/bot<token>/sendMessage`, normalizing errors.
   - Zero DOM, zero chrome.* — just `fetch` + plain data. Lives in its own file so it can be unit-tested under Node/Vitest.
 
-- **Page capture**. *(Section superseded by ADR-0006 — the as-built capture is a single inline `func` in the service worker returning `{ url, title, selection, bodyHtml: document.body.innerHTML }`. The Readability + Turndown pipeline below was the original plan and is preserved here as historical record.)*
-  Fresh `scripting.executeScript` injection per Send — the capture bundle (Readability + Turndown + glue) is loaded into the tab only on user gesture, computes, returns its result as the last-evaluated value of `executeScript`, and is gone. No resident listener, no per-tab state to track across navigations or SW idle, no parsing cost on tabs the user never dispatches from. Single entry point `capture(tab)`:
-  - Returns `{ url, title, selection, bodyMarkdown }`.
-  - `selection` is whatever `window.getSelection().toString()` produces at capture time; empty string if none.
-  - `bodyMarkdown` is produced by a two-stage pipeline:
-    1. **Readability.js** (`@mozilla/readability`) runs against a clone of the document and returns the article's main content as a sanitized HTML fragment, stripping nav, footers, scripts, and other boilerplate.
-    2. **Turndown** converts that HTML fragment to Markdown.
-    - Fallback: if Readability returns null (page isn't article-shaped — e.g. an app dashboard, search results), feed `document.body.innerHTML` to Turndown directly. Last-resort fallback is `document.body.innerText` trimmed and collapsed.
-  - Choosing Markdown over HTML is deliberate: the bot's consumer is an LLM agent, and Markdown is dramatically more token-efficient than HTML while preserving the structural cues (headings, lists, links, code blocks) the agent needs.
-  - Pure with respect to a given DOM — testable with jsdom.
+- **Page capture**. A 4-line inline `func` in the service worker, executed via `chrome.scripting.executeScript` on the active tab in response to Send. Returns `{ url, title, selection, bodyHtml: document.body.innerHTML }`. See ADR-0006 for why raw HTML and not Readability/Turndown Markdown.
 
 - **Settings store**. Thin wrapper over `chrome.storage.local` exposing `getConfig()` / `setConfig()` returning/accepting `{ botToken, chatId }`. Validates non-empty strings.
 
-- **Side panel UI**. Plain HTML + TypeScript (no React/Svelte/Preact in v1 — keep the UI surface flat). Responsibilities:
+- **Side panel UI**. Plain HTML + TypeScript (no React/Svelte/Preact). Responsibilities:
   - Subscribe to `chrome.tabs.onActivated` / `onUpdated` to refresh page context.
-  - Subscribe to a content-script message stream for live selection updates (debounced ~150 ms).
   - Render: page title, URL, selection preview, note textarea, Send button, status line.
-  - Per-tab draft note persisted in `chrome.storage.session` keyed by `tabId`, written on textarea-change (debounced ~250 ms). Restored on side-panel open or tab switch. Cleared on successful send and on `chrome.tabs.onRemoved` (the SW owns the tab-close cleanup since the panel may not be open when the tab closes). Browser restart loses drafts by design — tabIds aren't stable across restarts and `chrome.storage.session` is wiped.
-  - The selection chip is **not** persisted. On panel open or tab switch, the side panel re-queries the live page via a one-shot `scripting.executeScript` returning `window.getSelection().toString()`, then thereafter receives live updates from the always-on selection-stream script. Empty selection → empty chip; no stale-state caching.
-  - Chip mirrors reality strictly: every `selectionchange` (including those that empty the selection) is reflected immediately. Accepted trade-off: an accidental click that clears the selection also clears the chip; the user may not notice and dispatch without their intended highlight. The PRD prefers honesty here over a sticky-chip workaround.
+  - Per-tab draft notes held in memory in the controller (`Map<tabId, string>`) for the lifetime of the panel. Switching tabs preserves each tab's draft; closing the panel discards everything. No `chrome.storage` involvement.
+  - The selection chip is read once at panel mount and on every tab activation/update via a one-shot `scripting.executeScript` returning `window.getSelection().toString()`. If the user changes their selection while the panel is open and on the same tab, the chip will not update until the next tab change. Accepted trade-off (see ADR — selection streaming dropped).
+  - Controller is tested against an in-process ports interface (`SidePanelPorts`) so the chrome.* surface can be stubbed; see ADR-0003.
 
 - **Service worker**. Message broker only. Routes `{ type: 'send', tabId }` → capture → dispatcher → reply with status. No business logic of its own.
 
 ### Language
 
-Strict TypeScript across every surface — dispatcher, content scripts, service worker, side panel, options page, shared message types. `tsconfig.json` runs with `strict: true` plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. Types are taken seriously: the dispatcher's `DispatchResult` discriminant in `docs/telegram-dispatch.md` §2 is the compiled contract, not a doc-only convention. No `any`; if a value's shape genuinely isn't known, narrow at the boundary. Editor errors are a build break.
+Strict TypeScript across every surface — dispatcher, service worker, side panel, options page, shared message types. `tsconfig.json` runs with `strict: true` plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. Types are taken seriously: the dispatcher's `DispatchResult` discriminant in `docs/telegram-dispatch.md` §2 is the compiled contract, not a doc-only convention. No `any`; if a value's shape genuinely isn't known, narrow at the boundary. Editor errors are a build break.
 
 ### Build
 
-esbuild, driven by a hand-written `build.mjs` (~50 lines). One entry per surface (selection-stream content script, capture content script bundle, service worker, side panel, options page). **No minification** — readable output is more valuable than a smaller bundle for a project this size. Source maps on. Watch mode via `esbuild.context().watch()`; reload the unpacked extension by hand in `chrome://extensions`. `manifest.json` is hand-written and copied verbatim into `dist/` by the build script. No Vite, no CRXJS, no manifest generation. The dispatcher is bundle-free for Vitest — Vitest's own esbuild reads `.ts` directly.
-
-### Selection streaming
-
-The user story "highlight appears in the sidebar in near-real time" (US-4) conflicts with a pure `activeTab` permission model: `activeTab` grants per-tab access only after a user gesture and is revoked on navigation, so a content script that auto-listens to `selectionchange` across tab switches can't live there.
-
-Resolution — **hybrid permissions**:
-
-- **Always-on selection-stream content script** declared via a manifest `content_scripts` entry matching `http(s)://*/*`. Deliberately minimal: reads `window.getSelection().toString()` on `selectionchange`, debounces ~150 ms, calls `chrome.runtime.sendMessage` with `{ type: 'selection', text }`. Holds no token, performs no `fetch`, mutates no DOM. This is the only justification for the broad `http(s)` match — keep it that way.
-- **Top frame only** (`all_frames: false`). Selections inside iframes (embedded gists, sandboxed widgets, post embeds) are accepted as a known gap. Rationale: every additional frame the script runs in is install-prompt and review surface; the minimalism is worth more than catching iframe selections.
-- ~~**Heavy capture (Readability + Turndown)** is not always-on. It runs via `chrome.scripting.executeScript` on the active tab in response to the Send click — i.e., user-gesture path, no broad permission required for the extractor itself.~~ *(Superseded by ADR-0006: capture is a single inline `func` returning `document.body.innerHTML`, still user-gesture-only via `activeTab` + `scripting`.)*
-
-The side panel is the listener for `{ type: 'selection', ... }` messages — it adds its own `chrome.runtime.onMessage` handler rather than relaying through the service worker. Reason: selection updates fire continuously during a drag and would otherwise resurrect the MV3 service worker for purely UI-bound traffic. Both the side panel and the service worker validate `sender.id === chrome.runtime.id` via a shared helper (see `docs/telegram-dispatch.md` §7.3).
+`tsc -p tsconfig.build.json` plus a few `cp`s, driven by `build.mjs` (~15 lines). One entry per surface (service worker, side panel, options page). No bundler. No minification — readable output is more valuable than a smaller bundle for a project this size. `manifest.json` is hand-written and copied verbatim into `dist/` by the build script.
 
 ### Message format (sent to Telegram)
 
-The message body is Markdown, but sent **without** Telegram's `parse_mode` set — i.e. Telegram treats it as plain text and does not attempt to render or validate the Markdown. The agent consuming the bot's chat is the intended reader of the Markdown; Telegram is just the transport. This sidesteps Telegram's strict MarkdownV2 escaping rules entirely.
-
-> *As-built (ADR-0006): the wrapper is still Markdown-shaped but the `## Page` section now contains raw `document.body.innerHTML` instead of a Markdown conversion. Field renamed `bodyMarkdown` → `bodyHtml`.*
+The message body is Markdown-shaped, but sent **without** Telegram's `parse_mode` set — i.e. Telegram treats it as plain text and does not attempt to render or validate the Markdown. The agent consuming the bot's chat is the intended reader; Telegram is just the transport.
 
 Layout:
 
@@ -150,11 +121,9 @@ source: browser
 <bodyHtml>
 ```
 
-The first line is a fixed `source: browser` tag. It's terse on purpose — a machine-readable marker the agent can key off to recognize browser-originated dispatches. A human skimming the chat sees it once and ignores it.
+The first line is a fixed `source: browser` tag — a machine-readable marker the agent can key off to recognize browser-originated dispatches.
 
-If the assembled body exceeds 4096 characters, the dispatcher splits **section-anchored**: part 1 always carries the headers + URL + `## Selection` + `## Note` + as much of `## Page` as fits; parts 2..N are pure `## Page` continuation (the structural sections don't repeat). Per-part header budget is fixed at 64 chars, leaving an effective body budget of 4032 per part. Paragraph boundaries preferred for the split point; character boundaries as fallback. The `source: browser` tag is repeated on every part. `(n/N)` is prepended only when N ≥ 2 (single-part sends stay clean). No trailing `(end)` marker — `(n/N)` already signals the last part.
-
-Degenerate case: if the headers + Selection + Note alone exceed the part-1 budget (e.g. a 5000-char selection), the Selection or Note sections themselves are allowed to split across parts — accepted as rare and "weird input, weird output, still arrives."
+If the assembled body exceeds 4096 characters, the dispatcher strips the leading `source: browser\n\n` and chunks the remainder at paragraph (`\n\n`) or line (`\n`) boundaries with a 4032-char budget, then prepends `source: browser\n(n/N)\n\n` to each chunk. Paragraph boundaries are preferred but only honored when they sit in the upper half of the budget — otherwise the chunker hard-cuts at the budget to avoid wasting capacity. See ADR-0005 for the algorithm trade-off vs. a section-anchored splitter.
 
 Parts are sent serially. On partial failure (part 1 sent, part 2 fails), the dispatcher returns `{ ok: false, reason, detail }` with the `message_id`s that did land listed in `detail`, and stops. No automatic retry, no rate-limit throttling — `rate_limited` is surfaced honestly to the user.
 
@@ -162,13 +131,12 @@ Parts are sent serially. On partial failure (part 1 sent, part 2 fails), the dis
 
 - Bot token + chat ID live in `chrome.storage.local` (not `sync` — credentials shouldn't ride along with browser sync).
 - Options page is a separate HTML page reachable from the extension's action menu and via a "Configure" link in the side panel when config is missing.
-- **Validation is save-then-test, not save-time-blocking.** Save always persists (so the user can configure offline). A prominent "Test connection" button next to Save performs `getMe` + `getChat` on demand, surfacing the bot username and chat title on success ("✓ Verified — bot `@nanoclaw_bot`, chat 'Florian's Reading List'") or the same `reason` discriminant the dispatcher uses (`unauthorized`, `bad_chat`, `network`, `rate_limited`) on failure. The verification echo renders in its own panel of the options page — never adjacent to the token input, never showing the token itself, only public metadata (bot `username`, chat `title`/`first_name`). This double-duties as the troubleshooting affordance later: "Send fails → click Test" is the supported diagnostic flow.
+- Save persists immediately. There is no in-options "Test connection" button — the dispatcher's first real send returns mapped errors (`unauthorized`, `bad_chat`, etc.) that surface in the side panel's status line. This is also the supported troubleshooting flow.
 
 ### Permissions (manifest v3)
 
 - `sidePanel`, `storage`, `activeTab`, `scripting`, `tabs`.
-- Host permissions: `https://api.telegram.org/*` only. No `<all_urls>` host permission.
-- `content_scripts` declaration: matches `http://*/*` + `https://*/*`, `all_frames: false`, restricted to the selection-stream script described under "Selection streaming". The heavier extractor uses `activeTab` + `scripting` on user gesture and is not declared in `content_scripts`.
+- Host permissions: `https://api.telegram.org/*` only. No `<all_urls>` host permission. No `content_scripts` declaration — page reads (selection, body HTML) happen on user gesture via `activeTab` + `scripting`.
 
 ### Out-of-band decisions captured here
 
@@ -193,19 +161,13 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
   - Maps Telegram error responses (`401`, `400 chat not found`, `429`, network exception) to the documented `reason` discriminants.
   - Returns the array of returned `message_id`s on success.
 
-- ~~**Page capture extractor** — jsdom. Cover:~~ *(Removed per ADR-0006 — there's no extractor to test; capture is a 4-line inline `func`.)*
-  - ~~Extracts title, URL, and `bodyMarkdown` from a synthetic article-shaped document; the result is Markdown (has `#`/`##` headings, list syntax, link syntax — no raw HTML tags).~~
-  - ~~Strips nav/footer/script boilerplate: a fixture with `<nav>`, `<script>`, and an article body produces Markdown containing only the article body.~~
-  - ~~Falls back to a Turndown-of-`document.body` conversion when Readability returns null, and to `innerText` when even that yields nothing.~~
-  - ~~Returns the current selection text when one exists, empty string otherwise.~~
-
-- **Side-panel controller** — vitest + @testing-library/dom (jsdom env). *(Added beyond the original PRD; see ADR-0003.)* Cover:
-  - Mount renders the active tab's title/URL and a "no selection" chip; live selection events from the current tab update the chip; events from other tabs are ignored.
-  - Per-tab draft restored on mount; persisted after a 250 ms debounce on input; cleared on a successful Send.
+- **Side-panel controller** — vitest + @testing-library/dom (jsdom env). See ADR-0003. Cover:
+  - Mount renders the active tab's title/URL and the current selection in the chip.
+  - Per-tab draft preserved when switching tabs (in memory); cleared on a successful Send.
   - Send happy path clears the textarea and shows "Sent (N messages)"; failure preserves textarea and surfaces `reason — detail`.
   - Missing-config gating; Cmd/Ctrl+Enter shortcut; options-link click; tab-update refresh.
 
-- **Message composer** (part of the dispatcher or a sibling helper). Vitest. Cover:
+- **Message composer** (sibling helper to the dispatcher). Vitest. Cover:
   - The first line of the composed body is exactly `source: browser`.
   - When the body is split across multiple messages, every part begins with `source: browser` followed by the `(n/N)` prefix.
   - Sections (`## Selection`, `## Note`) are omitted entirely when their content is empty; `## Page` is always present when `bodyHtml` is non-empty.
@@ -215,8 +177,6 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 - Side panel DOM rendering. It's a shallow translation of state → DOM; integration value is low and maintenance cost is high.
 - Service worker message routing. Mostly plumbing; covered implicitly by manual end-to-end use.
 - Options page. Trivial form over `chrome.storage`.
-
-**Prior art:** none — empty repo. The dispatcher and extractor tests are greenfield; pattern after typical Vitest + jsdom setups.
 
 ## Out of Scope
 
@@ -230,11 +190,12 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 - Sending screenshots of the page.
 - Authentication beyond the Telegram bot token.
 - Syncing config across browsers.
+- Live selection mirroring while the panel is open (dropped — see ADR).
+- Persistent draft notes across panel close / browser restart (in-memory only).
+- In-options "Test connection" verifier (dropped — real Send is the verifier).
 
 ## Further Notes
 
 - Project naming: the working title and repo name is **nano-dispatch**. The user-facing extension name should also be "nano-dispatch" unless the user decides otherwise before publishing.
 - The screenshot the user referenced (Claude.ai's right-hand sidebar with "Mention Tabs", selected text chip, and a "Write a message…" composer) is the visual reference for the side panel's shape and information density. Match that pattern: small header showing the source, a visible chip/block for the selection, a roomy composer, a single primary action.
-- ~~A small bundler is now effectively required because the content script depends on `@mozilla/readability` and `turndown` from npm. esbuild or Vite is fine — pick whichever is least ceremony. The dispatcher remains pure JS with no bundling dependency.~~ *(Superseded by ADR-0006 — extraction pipeline dropped, so no bundler. Build is `tsc -p tsconfig.build.json` + three `cp`s.)*
-- ~~The choice of `@mozilla/readability` + `turndown` is a Lindy bet: both libraries have years of production use (Readability powers Firefox's reader mode; Turndown is the de-facto HTML→Markdown converter in the JS ecosystem). Not researched against newer alternatives by design — the goal is a boring, durable extraction pipeline, not the optimum on a benchmark.~~ *(Superseded by ADR-0006 — those libraries are no longer used.)*
 - No backend. The extension talks directly to `api.telegram.org`. The Telegram bot token's exposure surface is the user's own browser profile; that's an accepted trade-off for the no-infra design.

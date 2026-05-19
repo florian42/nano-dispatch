@@ -1,5 +1,5 @@
 import type { DispatchPayload, DispatchConfig, DispatchResult, FailureReason } from './types.js';
-import { splitForTelegram } from './split.js';
+import { composeForTelegram } from './compose.js';
 
 type FetchFn = typeof fetch;
 
@@ -17,7 +17,7 @@ export async function dispatch(
   config: DispatchConfig,
   fetchImpl: FetchFn = fetch,
 ): Promise<DispatchResult> {
-  const parts = splitForTelegram(payload);
+  const parts = composeForTelegram(payload);
   const url = `https://api.telegram.org/bot${config.botToken}/sendMessage`;
   const messageIds: number[] = [];
 

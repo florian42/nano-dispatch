@@ -13,24 +13,12 @@ export interface TabsPort {
   onUpdated(cb: (tabId: number, change: { title?: string; url?: string }) => void): void;
 }
 
-export interface DraftStoragePort {
-  get(tabId: number): Promise<string>;
-  set(tabId: number, value: string): Promise<void>;
-  clear(tabId: number): Promise<void>;
-}
-
 export interface ConfigPort {
   get(): Promise<Partial<Config>>;
 }
 
-export interface SelectionEventPayload {
-  tabId: number;
-  text: string;
-}
-
 export interface RuntimePort {
   send(message: { type: 'send'; tabId: number; note: string }): Promise<DispatchResult | undefined>;
-  onSelectionEvent(cb: (e: SelectionEventPayload) => void): void;
   openOptionsPage(): void;
 }
 
@@ -40,7 +28,6 @@ export interface ScriptingPort {
 
 export interface SidePanelPorts {
   tabs: TabsPort;
-  draft: DraftStoragePort;
   config: ConfigPort;
   runtime: RuntimePort;
   scripting: ScriptingPort;
