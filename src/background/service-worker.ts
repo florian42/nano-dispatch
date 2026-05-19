@@ -18,9 +18,15 @@ type CaptureFailure =
 
 type CaptureResult = { kind: 'ok'; value: PageCapture } | CaptureFailure;
 
-// We deliberately do NOT call setPanelBehavior({ openPanelOnActionClick: true }):
-// Chrome's auto-open path consumes the action click and never grants activeTab.
-// Handle the click ourselves so activeTab is granted before we open the panel.
+// Explicitly disable auto-open. Chrome's auto-open path consumes the
+// action click and never grants activeTab, so we must handle the click
+// ourselves. The setPanelBehavior value persists across browser
+// restarts in the user profile, so we have to actively set it to false
+// — not just omit the previous setPanelBehavior({ ...: true }) call.
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {
+  /* older Chrome versions may not support setPanelBehavior */
+});
+
 chrome.action.onClicked.addListener((tab) => {
   void handleActionClick(tab);
 });
