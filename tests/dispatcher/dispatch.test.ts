@@ -2,15 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { dispatch } from '../../src/dispatcher/dispatch.js';
 import type { DispatchPayload, DispatchConfig } from '../../src/dispatcher/types.js';
 
-type Call = { url: string; body: unknown };
+type Call = { url: string; form: FormData };
 
 function stubFetch(responses: readonly (Response | Error)[]) {
   const calls: Call[] = [];
   let i = 0;
   const fn: typeof fetch = (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
-    const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : init?.body;
-    calls.push({ url, body });
+    const body = init?.body;
+    if (!(body instanceof FormData)) {
+      return Promise.reject(new Error('expected FormData body'));
+    }
+    calls.push({ url, form: body });
     const next = responses[i] ?? responses[responses.length - 1];
     i += 1;
     if (next === undefined) return Promise.reject(new Error('no stub response'));
@@ -31,48 +34,42 @@ const config: DispatchConfig = { botToken: 'TKN', chatId: 'CHAT' };
 const payload: DispatchPayload = {
   url: 'https://example.com/post',
   title: 'Hello',
-  bodyHtml: 'a page',
+  bodyHtml: '<p>a page</p>',
 };
 
 describe('dispatch', () => {
-  it('posts a single sendMessage to api.telegram.org with the composed body and returns the message id', async () => {
+  it('posts a single sendDocument with chat_id, caption, and the HTML body as a file', async () => {
     const { fn, calls } = stubFetch([jsonResponse({ ok: true, result: { message_id: 42 } })]);
 
     const result = await dispatch(payload, config, fn);
 
     expect(result).toEqual({ ok: true, messageIds: [42] });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('https://api.telegram.org/botTKN/sendMessage');
-    expect(calls[0]?.body).toEqual({
-      chat_id: 'CHAT',
-      text: 'source: browser\n\n# Hello\nhttps://example.com/post\n\n## Page\na page',
-      disable_web_page_preview: true,
-    });
+    expect(calls[0]?.url).toBe('https://api.telegram.org/botTKN/sendDocument');
+
+    const form = calls[0]!.form;
+    expect(form.get('chat_id')).toBe('CHAT');
+    expect(form.get('caption')).toBe('source: browser\n\nHello\nhttps://example.com/post');
+
+    const doc = form.get('document');
+    expect(doc).toBeInstanceOf(File);
+    if (doc instanceof File) {
+      expect(doc.name).toBe('hello.html');
+      expect(doc.type).toBe('text/html');
+      const text = await doc.text();
+      expect(text.startsWith('<!doctype html>')).toBe(true);
+      expect(text).toContain('<p>a page</p>');
+    }
   });
 
-  it('returns each message_id when the body splits across multiple sendMessage calls', async () => {
-    const longPage = 'long '.repeat(2000); // ~10000 chars
-    const { fn, calls } = stubFetch([
-      jsonResponse({ ok: true, result: { message_id: 1 } }),
-      jsonResponse({ ok: true, result: { message_id: 2 } }),
-      jsonResponse({ ok: true, result: { message_id: 3 } }),
-    ]);
+  it('sends a long page in one request (no chunking)', async () => {
+    const longPage = 'long '.repeat(20000); // ~100k chars — would have been many sendMessage parts
+    const { fn, calls } = stubFetch([jsonResponse({ ok: true, result: { message_id: 7 } })]);
 
     const result = await dispatch({ ...payload, bodyHtml: longPage }, config, fn);
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.messageIds.length).toBeGreaterThan(1);
-      expect(result.messageIds).toEqual(
-        calls.map((_, i) => i + 1).slice(0, result.messageIds.length),
-      );
-    }
-    // Every part body carries the (n/N) marker.
-    const N = calls.length;
-    calls.forEach((c, i) => {
-      const text = (c.body as { text: string }).text;
-      expect(text.startsWith(`source: browser\n(${i + 1}/${N})\n\n`)).toBe(true);
-    });
+    expect(result).toEqual({ ok: true, messageIds: [7] });
+    expect(calls).toHaveLength(1);
   });
 
   it('maps 401 → unauthorized', async () => {
@@ -129,29 +126,6 @@ describe('dispatch', () => {
     if (!result.ok) {
       expect(result.reason).toBe('unknown');
       expect(result.detail).toContain('Internal Server Error');
-    }
-  });
-
-  it('on partial failure, lists sent message_ids and the failing part in detail', async () => {
-    const longPage = 'long '.repeat(2000);
-    const { fn } = stubFetch([
-      jsonResponse({ ok: true, result: { message_id: 11 } }),
-      jsonResponse(
-        {
-          ok: false,
-          error_code: 429,
-          description: 'Too Many Requests',
-          parameters: { retry_after: 2 },
-        },
-        429,
-      ),
-    ]);
-    const result = await dispatch({ ...payload, bodyHtml: longPage }, config, fn);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe('rate_limited');
-      expect(result.detail).toContain('sent message_ids: [11]');
-      expect(result.detail).toMatch(/failed at part 2\/\d+/);
     }
   });
 });

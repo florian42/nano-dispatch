@@ -1,56 +1,71 @@
 import type { DispatchPayload } from './types.js';
 
 export const SOURCE_TAG = 'source: browser';
-export const TELEGRAM_LIMIT = 4096;
+export const CAPTION_LIMIT = 1024;
 
-const PER_PART_BUDGET = 4032;
+export function composeCaption(payload: DispatchPayload): string {
+  const head = [SOURCE_TAG, '', payload.title, payload.url].join('\n');
+  if (!payload.note || payload.note.length === 0) return clamp(head);
 
-export function composeBody(payload: DispatchPayload): string {
-  const lines: string[] = [SOURCE_TAG, '', `# ${payload.title}`, payload.url];
+  const withNote = `${head}\n\n${payload.note}`;
+  if (withNote.length <= CAPTION_LIMIT) return withNote;
+
+  // Note pushes us over — keep the head intact and fit as much of the note
+  // as we can. The note also lives in the document body, so this is a
+  // preview, not a loss.
+  const available = CAPTION_LIMIT - head.length - 2 - 1; // \n\n + at least one char
+  if (available <= 0) return clamp(head);
+  return `${head}\n\n${payload.note.slice(0, available)}…`;
+}
+
+export function composeDocument(payload: DispatchPayload): string {
+  const parts: string[] = [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8">',
+    `<title>${escapeText(payload.title)}</title>`,
+    `<link rel="canonical" href="${escapeAttr(payload.url)}">`,
+    '</head>',
+    '<body>',
+    '<header>',
+    `<p>${SOURCE_TAG}</p>`,
+    `<h1>${escapeText(payload.title)}</h1>`,
+    `<p><a href="${escapeAttr(payload.url)}">${escapeText(payload.url)}</a></p>`,
+  ];
 
   if (payload.selection && payload.selection.length > 0) {
-    lines.push('', '## Selection', payload.selection);
+    parts.push('<section><h2>Selection</h2>');
+    parts.push(`<blockquote>${escapeText(payload.selection)}</blockquote>`);
+    parts.push('</section>');
   }
   if (payload.note && payload.note.length > 0) {
-    lines.push('', '## Note', payload.note);
-  }
-  if (payload.bodyHtml.length > 0) {
-    lines.push('', '## Page', payload.bodyHtml);
+    parts.push('<section><h2>Note</h2>');
+    parts.push(`<p>${escapeText(payload.note)}</p>`);
+    parts.push('</section>');
   }
 
-  return lines.join('\n');
+  parts.push('</header>', '<hr>', '<main>', payload.bodyHtml, '</main>', '</body>', '</html>');
+  return parts.join('\n');
 }
 
-export function composeForTelegram(payload: DispatchPayload): string[] {
-  const composed = composeBody(payload);
-  if (composed.length <= TELEGRAM_LIMIT) return [composed];
-
-  const prefix = `${SOURCE_TAG}\n\n`;
-  const bare = composed.startsWith(prefix) ? composed.slice(prefix.length) : composed;
-  const chunks = chunkAtBoundaries(bare, PER_PART_BUDGET);
-  const total = chunks.length;
-  return chunks.map((chunk, i) => `${SOURCE_TAG}\n(${i + 1}/${total})\n\n${chunk}`);
+export function documentFilename(payload: DispatchPayload): string {
+  const slug = payload.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return `${slug || 'page'}.html`;
 }
 
-function chunkAtBoundaries(text: string, budget: number): string[] {
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > budget) {
-    const splitAt = findSplitPoint(remaining, budget);
-    chunks.push(remaining.slice(0, splitAt).replace(/\n+$/, ''));
-    remaining = remaining.slice(splitAt).replace(/^\n+/, '');
-  }
-  if (remaining.length > 0) chunks.push(remaining);
-  return chunks;
+function clamp(s: string): string {
+  return s.length <= CAPTION_LIMIT ? s : s.slice(0, CAPTION_LIMIT);
 }
 
-function findSplitPoint(text: string, budget: number): number {
-  // Only honor a break that's "near" the budget; otherwise it's better to
-  // hard-cut at the budget than waste capacity on an early structural newline.
-  const minBoundary = Math.floor(budget / 2);
-  const paraBreak = text.lastIndexOf('\n\n', budget);
-  if (paraBreak > minBoundary) return paraBreak;
-  const lineBreak = text.lastIndexOf('\n', budget);
-  if (lineBreak > minBoundary) return lineBreak;
-  return budget;
+function escapeText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeAttr(s: string): string {
+  return escapeText(s).replace(/"/g, '&quot;');
 }

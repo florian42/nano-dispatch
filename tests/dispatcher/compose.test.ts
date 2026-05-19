@@ -1,63 +1,96 @@
 import { describe, expect, it } from 'vitest';
-import { composeBody } from '../../src/dispatcher/compose.js';
+import {
+  composeCaption,
+  composeDocument,
+  documentFilename,
+  CAPTION_LIMIT,
+} from '../../src/dispatcher/compose.js';
 
-describe('composeBody', () => {
-  const base = {
-    url: 'https://example.com/post',
-    title: 'Hello, world',
-    bodyHtml: '# Article\n\nfirst paragraph',
-  };
+const base = {
+  url: 'https://example.com/post',
+  title: 'Hello, world',
+  bodyHtml: '<p>first paragraph</p>',
+};
 
-  it('renders source tag, title+url, and all three sections for a full payload', () => {
-    const body = composeBody({
-      url: 'https://example.com/post',
-      title: 'Hello, world',
-      selection: 'a notable quote',
-      note: 'worth re-reading',
-      bodyHtml: '# Article\n\nfirst paragraph',
-    });
+describe('composeCaption', () => {
+  it('leads with the source tag, then title and url', () => {
+    const caption = composeCaption(base);
+    expect(caption).toBe('source: browser\n\nHello, world\nhttps://example.com/post');
+  });
 
-    expect(body).toBe(
-      [
-        'source: browser',
-        '',
-        '# Hello, world',
-        'https://example.com/post',
-        '',
-        '## Selection',
-        'a notable quote',
-        '',
-        '## Note',
-        'worth re-reading',
-        '',
-        '## Page',
-        '# Article\n\nfirst paragraph',
-      ].join('\n'),
+  it('appends the note as a trailing block when present', () => {
+    const caption = composeCaption({ ...base, note: 'worth re-reading' });
+    expect(caption).toBe(
+      'source: browser\n\nHello, world\nhttps://example.com/post\n\nworth re-reading',
     );
   });
 
-  it('omits the Selection section when selection is missing or empty', () => {
-    const body = composeBody({ ...base, note: 'a note' });
-    expect(body).not.toContain('## Selection');
-    expect(body).toContain('## Note');
-
-    const empty = composeBody({ ...base, selection: '', note: 'a note' });
-    expect(empty).not.toContain('## Selection');
+  it('omits the note section when note is empty', () => {
+    const caption = composeCaption({ ...base, note: '' });
+    expect(caption).toBe('source: browser\n\nHello, world\nhttps://example.com/post');
   });
 
-  it('omits the Note section when note is missing or empty', () => {
-    const body = composeBody({ ...base, selection: 'a quote' });
-    expect(body).not.toContain('## Note');
-    expect(body).toContain('## Selection');
+  it('stays within the Telegram caption limit even with a giant note', () => {
+    const huge = 'x'.repeat(5000);
+    const caption = composeCaption({ ...base, note: huge });
+    expect(caption.length).toBeLessThanOrEqual(CAPTION_LIMIT);
+    expect(caption.startsWith('source: browser\n\nHello, world\nhttps://example.com/post')).toBe(
+      true,
+    );
+  });
+});
+
+describe('composeDocument', () => {
+  it('produces a standalone HTML document with title, url, and body inline', () => {
+    const doc = composeDocument(base);
+    expect(doc.startsWith('<!doctype html>')).toBe(true);
+    expect(doc).toContain('<title>Hello, world</title>');
+    expect(doc).toContain('<h1>Hello, world</h1>');
+    expect(doc).toContain('href="https://example.com/post"');
+    expect(doc).toContain('<p>first paragraph</p>');
+    expect(doc.trim().endsWith('</html>')).toBe(true);
   });
 
-  it('omits the Page section when bodyHtml is empty', () => {
-    const body = composeBody({ ...base, bodyHtml: '' });
-    expect(body).not.toContain('## Page');
+  it('includes selection and note as their own sections when present', () => {
+    const doc = composeDocument({
+      ...base,
+      selection: 'a notable quote',
+      note: 'worth re-reading',
+    });
+    expect(doc).toContain('<h2>Selection</h2>');
+    expect(doc).toContain('<blockquote>a notable quote</blockquote>');
+    expect(doc).toContain('<h2>Note</h2>');
+    expect(doc).toContain('worth re-reading');
   });
 
-  it('uses source: browser as the very first line', () => {
-    const body = composeBody({ ...base, selection: 's', note: 'n' });
-    expect(body.split('\n')[0]).toBe('source: browser');
+  it('omits selection and note sections when absent', () => {
+    const doc = composeDocument(base);
+    expect(doc).not.toContain('<h2>Selection</h2>');
+    expect(doc).not.toContain('<h2>Note</h2>');
+  });
+
+  it('escapes HTML metacharacters in title, url, selection, and note', () => {
+    const doc = composeDocument({
+      url: 'https://example.com/?q=<script>',
+      title: 'Tom & Jerry <evil>',
+      bodyHtml: '<p>raw body kept as-is</p>',
+      selection: '1 < 2 && 3 > 2',
+      note: 'note with "quotes"',
+    });
+    expect(doc).toContain('<title>Tom &amp; Jerry &lt;evil&gt;</title>');
+    expect(doc).toContain('href="https://example.com/?q=&lt;script&gt;"');
+    expect(doc).toContain('<blockquote>1 &lt; 2 &amp;&amp; 3 &gt; 2</blockquote>');
+    // bodyHtml is intentionally NOT escaped — it's the captured page markup.
+    expect(doc).toContain('<p>raw body kept as-is</p>');
+  });
+});
+
+describe('documentFilename', () => {
+  it('slugifies the title and uses an .html extension', () => {
+    expect(documentFilename(base)).toBe('hello-world.html');
+  });
+
+  it('falls back to page.html when the title slugifies to nothing', () => {
+    expect(documentFilename({ ...base, title: '!!!' })).toBe('page.html');
   });
 });

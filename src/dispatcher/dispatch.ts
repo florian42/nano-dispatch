@@ -1,5 +1,5 @@
 import type { DispatchPayload, DispatchConfig, DispatchResult, FailureReason } from './types.js';
-import { composeForTelegram } from './compose.js';
+import { composeCaption, composeDocument, documentFilename } from './compose.js';
 
 type FetchFn = typeof fetch;
 
@@ -17,46 +17,33 @@ export async function dispatch(
   config: DispatchConfig,
   fetchImpl: FetchFn = fetch,
 ): Promise<DispatchResult> {
-  const parts = composeForTelegram(payload);
-  const url = `https://api.telegram.org/bot${config.botToken}/sendMessage`;
-  const messageIds: number[] = [];
+  const url = `https://api.telegram.org/bot${config.botToken}/sendDocument`;
+  const form = new FormData();
+  form.append('chat_id', config.chatId);
+  form.append('caption', composeCaption(payload));
+  const blob = new Blob([composeDocument(payload)], { type: 'text/html' });
+  form.append('document', blob, documentFilename(payload));
 
-  for (let i = 0; i < parts.length; i++) {
-    const text = parts[i];
-    if (text === undefined) continue;
-    let res: Response;
-    try {
-      res = await fetchImpl(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.chatId,
-          text,
-          disable_web_page_preview: true,
-        }),
-      });
-    } catch {
-      return failure('network', i + 1, parts.length, messageIds, 'fetch failed');
-    }
-
-    let parsed: TelegramResponse;
-    try {
-      parsed = (await res.json()) as TelegramResponse;
-    } catch {
-      return failure('unknown', i + 1, parts.length, messageIds, `http ${res.status}`);
-    }
-
-    if (parsed.ok) {
-      messageIds.push(parsed.result.message_id);
-      continue;
-    }
-
-    const reason = classifyError(res.status, parsed);
-    const detailExtra = formatErrorDetail(reason, parsed);
-    return failure(reason, i + 1, parts.length, messageIds, detailExtra);
+  let res: Response;
+  try {
+    res = await fetchImpl(url, { method: 'POST', body: form });
+  } catch {
+    return { ok: false, reason: 'network', detail: 'fetch failed' };
   }
 
-  return { ok: true, messageIds };
+  let parsed: TelegramResponse;
+  try {
+    parsed = (await res.json()) as TelegramResponse;
+  } catch {
+    return { ok: false, reason: 'unknown', detail: `http ${res.status}` };
+  }
+
+  if (parsed.ok) {
+    return { ok: true, messageIds: [parsed.result.message_id] };
+  }
+
+  const reason = classifyError(res.status, parsed);
+  return { ok: false, reason, detail: formatErrorDetail(reason, parsed) };
 }
 
 function classifyError(status: number, body: TelegramErr): FailureReason {
@@ -74,16 +61,4 @@ function formatErrorDetail(reason: FailureReason, body: TelegramErr): string {
     return retry !== undefined ? `retry_after=${retry}` : 'rate limited';
   }
   return body.description ?? 'no description';
-}
-
-function failure(
-  reason: FailureReason,
-  failedPart: number,
-  totalParts: number,
-  sentIds: number[],
-  extra: string,
-): DispatchResult {
-  const sentPart = `sent message_ids: [${sentIds.join(', ')}]`;
-  const failPart = `failed at part ${failedPart}/${totalParts}: ${extra}`;
-  return { ok: false, reason, detail: `${sentPart}; ${failPart}` };
 }
