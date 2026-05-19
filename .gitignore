@@ -54,3 +54,8 @@ Thumbs.db
 
 # ── Local-only Claude / agent scratch ───────────────────────────────
 .claude/settings.local.json
+
+# ── Git worktrees (Claude Code / manual) ────────────────────────────
+.worktrees/
+worktrees/
+.claude/worktrees/
