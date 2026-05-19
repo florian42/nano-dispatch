@@ -31,6 +31,16 @@ export default tseslint.config(
         'error',
         { allowNumber: true, allowBoolean: true },
       ],
+      // The chrome.* global is tagged @deprecated by @types/chrome for legacy
+      // Chrome Apps API surface; the MV3 surface we actually use is fine.
+      '@typescript-eslint/no-deprecated': 'off',
+      '@typescript-eslint/consistent-type-definitions': 'off',
+    },
+  },
+  {
+    files: ['tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
   {

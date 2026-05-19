@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>nano-dispatch — Options</title>
+    <style>
+      :root {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        color-scheme: light dark;
+      }
+      body {
+        max-width: 520px;
+        margin: 32px auto;
+        padding: 0 16px;
+        line-height: 1.4;
+      }
+      h1 {
+        font-size: 18px;
+        margin-bottom: 4px;
+      }
+      .subtitle {
+        color: #6b7280;
+        font-size: 13px;
+        margin-bottom: 24px;
+      }
+      label {
+        display: block;
+        margin-bottom: 16px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .input-row {
+        display: flex;
+        gap: 6px;
+        margin-top: 4px;
+      }
+      input {
+        flex: 1;
+        padding: 6px 8px;
+        font-size: 13px;
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+      }
+      button {
+        padding: 6px 12px;
+        font-size: 13px;
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        background: #f9fafb;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #1d4ed8;
+        color: white;
+        border-color: #1d4ed8;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      #verify-panel {
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: #f3f4f6;
+        font-size: 13px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        white-space: pre-wrap;
+      }
+      #verify-panel.error {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+      #verify-panel.ok {
+        background: #d1fae5;
+        color: #065f46;
+      }
+      .footnote {
+        margin-top: 24px;
+        font-size: 12px;
+        color: #6b7280;
+      }
+      code {
+        background: #f3f4f6;
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>nano-dispatch</h1>
+    <p class="subtitle">Configure your Telegram bot. Saved locally; never synced.</p>
+
+    <label>
+      Bot token
+      <div class="input-row">
+        <input id="bot-token" type="password" placeholder="123456:abc..." autocomplete="off" />
+        <button id="reveal" type="button">Reveal</button>
+      </div>
+    </label>
+
+    <label>
+      Chat ID
+      <div class="input-row">
+        <input id="chat-id" type="text" placeholder="-1001234567890 or 123456" autocomplete="off" />
+      </div>
+    </label>
+
+    <div class="actions">
+      <button id="save" class="primary" type="button">Save</button>
+      <button id="test" type="button">Test connection</button>
+    </div>
+
+    <div id="verify-panel" hidden></div>
+
+    <p class="footnote">
+      If this token may have leaked, run <code>/revoke</code> in <code>@BotFather</code> to rotate
+      it, then paste the new token here.
+    </p>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

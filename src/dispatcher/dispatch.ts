@@ -4,7 +4,12 @@ import { splitForTelegram } from './split.js';
 type FetchFn = typeof fetch;
 
 type TelegramOk = { ok: true; result: { message_id: number } };
-type TelegramErr = { ok: false; error_code?: number; description?: string; parameters?: { retry_after?: number } };
+type TelegramErr = {
+  ok: false;
+  error_code?: number;
+  description?: string;
+  parameters?: { retry_after?: number };
+};
 type TelegramResponse = TelegramOk | TelegramErr;
 
 export async function dispatch(
@@ -17,7 +22,8 @@ export async function dispatch(
   const messageIds: number[] = [];
 
   for (let i = 0; i < parts.length; i++) {
-    const text = parts[i]!;
+    const text = parts[i];
+    if (text === undefined) continue;
     let res: Response;
     try {
       res = await fetchImpl(url, {

@@ -4,18 +4,18 @@ import type { DispatchPayload, DispatchConfig } from '../../src/dispatcher/types
 
 type Call = { url: string; body: unknown };
 
-function stubFetch(responses: ReadonlyArray<Response | Error>) {
+function stubFetch(responses: readonly (Response | Error)[]) {
   const calls: Call[] = [];
   let i = 0;
-  const fn: typeof fetch = async (input, init) => {
+  const fn: typeof fetch = (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
-    const body =
-      typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : init?.body;
+    const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : init?.body;
     calls.push({ url, body });
     const next = responses[i] ?? responses[responses.length - 1];
     i += 1;
-    if (next instanceof Error) throw next;
-    return next!.clone();
+    if (next === undefined) return Promise.reject(new Error('no stub response'));
+    if (next instanceof Error) return Promise.reject(next);
+    return Promise.resolve(next.clone());
   };
   return { fn, calls };
 }
@@ -63,7 +63,9 @@ describe('dispatch', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.messageIds.length).toBeGreaterThan(1);
-      expect(result.messageIds).toEqual(calls.map((_, i) => i + 1).slice(0, result.messageIds.length));
+      expect(result.messageIds).toEqual(
+        calls.map((_, i) => i + 1).slice(0, result.messageIds.length),
+      );
     }
     // Every part body carries the (n/N) marker.
     const N = calls.length;
@@ -94,7 +96,12 @@ describe('dispatch', () => {
   it('maps 429 → rate_limited and includes retry_after in detail', async () => {
     const { fn } = stubFetch([
       jsonResponse(
-        { ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 7 } },
+        {
+          ok: false,
+          error_code: 429,
+          description: 'Too Many Requests',
+          parameters: { retry_after: 7 },
+        },
         429,
       ),
     ]);
@@ -129,7 +136,15 @@ describe('dispatch', () => {
     const longPage = 'long '.repeat(2000);
     const { fn } = stubFetch([
       jsonResponse({ ok: true, result: { message_id: 11 } }),
-      jsonResponse({ ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 2 } }, 429),
+      jsonResponse(
+        {
+          ok: false,
+          error_code: 429,
+          description: 'Too Many Requests',
+          parameters: { retry_after: 2 },
+        },
+        429,
+      ),
     ]);
     const result = await dispatch({ ...payload, bodyMarkdown: longPage }, config, fn);
     expect(result.ok).toBe(false);

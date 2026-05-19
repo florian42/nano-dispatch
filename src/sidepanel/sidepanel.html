@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>nano-dispatch</title>
+    <style>
+      :root {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 100vh;
+        box-sizing: border-box;
+      }
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 13px;
+      }
+      #page-title {
+        font-weight: 600;
+        word-break: break-word;
+      }
+      #page-url {
+        font-size: 11px;
+        color: #555;
+        word-break: break-all;
+        text-decoration: none;
+      }
+      #selection-chip {
+        font-size: 12px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: #f3f4f6;
+        color: #444;
+        max-height: 100px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+      #selection-chip.empty {
+        color: #999;
+        font-style: italic;
+      }
+      #note-input {
+        flex: 1;
+        min-height: 100px;
+        padding: 8px;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        font-family: inherit;
+        font-size: 13px;
+        resize: vertical;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      #send-button {
+        flex: 1;
+        padding: 8px 12px;
+        background: #1d4ed8;
+        color: white;
+        border: 0;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #send-button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      #status {
+        font-size: 12px;
+        min-height: 16px;
+      }
+      #status.ok {
+        color: #047857;
+      }
+      #status.error {
+        color: #b91c1c;
+      }
+      #options-link {
+        font-size: 11px;
+        color: #555;
+        text-align: right;
+      }
+      @media (prefers-color-scheme: dark) {
+        #selection-chip {
+          background: #1f2937;
+          color: #d1d5db;
+        }
+        #note-input {
+          background: #111827;
+          color: #f3f4f6;
+          border-color: #374151;
+        }
+        #page-url,
+        #options-link {
+          color: #9ca3af;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div id="page-title"></div>
+      <a id="page-url" target="_blank" rel="noopener"></a>
+    </header>
+
+    <div id="selection-chip" class="empty">no selection</div>
+
+    <textarea id="note-input" placeholder="Write a message…"></textarea>
+
+    <div class="row">
+      <button id="send-button" type="button">Send</button>
+    </div>
+
+    <div id="status" aria-live="polite"></div>
+
+    <a id="options-link" href="#">Configure bot…</a>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>
