@@ -18,9 +18,28 @@ type CaptureFailure =
 
 type CaptureResult = { kind: 'ok'; value: PageCapture } | CaptureFailure;
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
-  /* may not be supported on older Chrome */
+// We deliberately do NOT call setPanelBehavior({ openPanelOnActionClick: true }):
+// Chrome's auto-open path consumes the action click and never grants activeTab.
+// Handle the click ourselves so activeTab is granted before we open the panel.
+chrome.action.onClicked.addListener((tab) => {
+  void handleActionClick(tab);
 });
+
+async function handleActionClick(tab: chrome.tabs.Tab): Promise<void> {
+  if (tab.windowId !== undefined) {
+    try {
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+    } catch {
+      /* user may have closed the window or sidePanel.open is unsupported */
+    }
+  }
+  // Nudge the side panel to re-probe. The click just granted activeTab for
+  // this tab, but tabs.onActivated does NOT fire when the same tab stays
+  // active, so the panel wouldn't notice on its own.
+  chrome.runtime.sendMessage({ type: 'refresh-access' }).catch(() => {
+    /* no listener (panel closed) — nothing to do */
+  });
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;

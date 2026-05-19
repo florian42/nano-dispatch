@@ -36,6 +36,18 @@ const ports: SidePanelPorts = {
     openOptionsPage() {
       void chrome.runtime.openOptionsPage();
     },
+    onRefreshAccess(cb) {
+      chrome.runtime.onMessage.addListener((message) => {
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          (message as { type?: unknown }).type === 'refresh-access'
+        ) {
+          cb();
+        }
+        return false;
+      });
+    },
   },
   scripting: {
     async probe(tabId, url): Promise<TabAccess> {

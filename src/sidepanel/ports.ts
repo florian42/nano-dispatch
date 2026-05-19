@@ -20,6 +20,10 @@ export interface ConfigPort {
 export interface RuntimePort {
   send(message: { type: 'send'; tabId: number; note: string }): Promise<DispatchResult | undefined>;
   openOptionsPage(): void;
+  // Subscribe to a "re-probe access now" nudge from the service worker —
+  // fired after the user clicks the toolbar icon, which grants activeTab
+  // but emits no tabs.* event when the same tab stays active.
+  onRefreshAccess(cb: () => void): void;
 }
 
 // Result of probing a tab for read access. `ok` carries the current

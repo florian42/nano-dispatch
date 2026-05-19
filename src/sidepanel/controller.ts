@@ -70,6 +70,10 @@ export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePa
     void refreshTabContext();
   });
 
+  ports.runtime.onRefreshAccess(() => {
+    void refreshTabContext();
+  });
+
   ports.tabs.onUpdated((tabId, change) => {
     if (tabId !== currentTabId) return;
     if (change.title !== undefined || change.url !== undefined) {

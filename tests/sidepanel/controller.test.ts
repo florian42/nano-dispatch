@@ -15,6 +15,7 @@ interface StubState {
   openOptionsCalls: number;
   activatedListener: (() => void) | null;
   updatedListener: ((tabId: number, change: { title?: string; url?: string }) => void) | null;
+  refreshAccessListener: (() => void) | null;
 }
 
 function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state: StubState } {
@@ -27,6 +28,7 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
     openOptionsCalls: 0,
     activatedListener: null,
     updatedListener: null,
+    refreshAccessListener: null,
     ...initial,
   };
 
@@ -50,6 +52,9 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
       },
       openOptionsPage() {
         state.openOptionsCalls += 1;
+      },
+      onRefreshAccess(cb) {
+        state.refreshAccessListener = cb;
       },
     },
     scripting: {
@@ -123,6 +128,25 @@ describe('side-panel controller', () => {
     const chip = root.querySelector('#selection-chip');
     expect(chip?.textContent).toMatch(/can't be captured/i);
     expect(chip?.classList.contains('warn')).toBe(true);
+  });
+
+  it('re-probes access when the service worker fires onRefreshAccess', async () => {
+    const root = makeRoot();
+    const { ports, state } = makePorts({ access: { kind: 'needs_activation' } });
+
+    const { ready } = mountSidePanel(root, ports);
+    await ready;
+
+    expect(root.querySelector('#selection-chip')?.textContent).toMatch(/toolbar icon/i);
+
+    // Simulate the user clicking the toolbar icon: SW grants activeTab,
+    // probe now succeeds.
+    state.access = { kind: 'ok', selection: 'now I can read this' };
+    state.refreshAccessListener?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getByText(root, 'now I can read this')).toBeDefined();
   });
 
   it('on Send: dispatches the note + tabId, shows "Sent", clears the textarea', async () => {

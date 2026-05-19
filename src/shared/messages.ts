@@ -4,4 +4,11 @@ export type SendRequest = {
   note: string;
 };
 
-export type ExtensionMessage = SendRequest;
+// Broadcast from the service worker after the user clicks the toolbar
+// icon — activeTab may now be granted for the current tab, so the side
+// panel should re-probe. No reply expected.
+export type RefreshNotice = {
+  type: 'refresh-access';
+};
+
+export type ExtensionMessage = SendRequest | RefreshNotice;
