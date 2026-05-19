@@ -14,7 +14,7 @@ A Chrome extension that lives in the browser side panel. While I read, the sideb
 - whatever I've highlighted on the page,
 - a textarea for a note I write myself.
 
-A "Send" button packages all three into a single Telegram message and pushes it to my `nanoclaw` bot. It's one-direction only: the extension sends, it does not read replies or listen for bot responses.
+A "Send" button packages all three into a single Telegram message and pushes it to my `nanoclaw` bot. The page content is converted to Markdown (not raw HTML) before sending, so the downstream agent reading the message gets a token-efficient, well-structured representation instead of DOM noise. It's one-direction only: the extension sends, it does not read replies or listen for bot responses.
 
 A small options page lets me paste my bot token and chat ID once.
 
@@ -44,6 +44,9 @@ A small options page lets me paste my bot token and chat ID once.
 22. As a user, I want the extension to work on standard `http(s)://` pages, so that any normal article or docs page is dispatchable.
 23. As a user, I want a graceful "this page can't be captured" message on restricted pages (chrome://, web store, PDF viewer), so that I'm not confused when the sidebar can't read the page.
 24. As a user, I want the extension to work without an external server — just the extension talking to Telegram directly — so that there's no infrastructure for me to operate.
+25. As a user whose Telegram bot is consumed by an LLM agent, I want the page content sent as Markdown rather than HTML, so that the agent receives a compact, well-structured payload instead of paying token cost for tag soup.
+26. As a user whose Telegram bot is consumed by an LLM agent, I want the page content stripped of boilerplate (nav, footers, ads, scripts) before conversion, so that the agent sees the article body and not the chrome around it.
+27. As a user whose Telegram bot is consumed by an LLM agent, I want every dispatch to carry a short machine-readable marker identifying it as having come from the browser extension, so that the agent can route or label browser-originated messages distinctly from other inputs to the bot.
 
 ## Implementation Decisions
 
@@ -66,9 +69,13 @@ Four runtime surfaces:
   - Zero DOM, zero chrome.* — just `fetch` + plain data. Lives in its own file so it can be unit-tested under Node/Vitest.
 
 - **Page capture**. Single entry point `capture(tab)`:
-  - Returns `{ url, title, selection, bodyText }`.
+  - Returns `{ url, title, selection, bodyMarkdown }`.
   - `selection` is whatever `window.getSelection().toString()` produces at capture time; empty string if none.
-  - `bodyText` extraction starts simple: `document.body.innerText`, trimmed and collapsed. (Readability.js is a possible later upgrade; not in scope for v1.)
+  - `bodyMarkdown` is produced by a two-stage pipeline:
+    1. **Readability.js** (`@mozilla/readability`) runs against a clone of the document and returns the article's main content as a sanitized HTML fragment, stripping nav, footers, scripts, and other boilerplate.
+    2. **Turndown** converts that HTML fragment to Markdown.
+    - Fallback: if Readability returns null (page isn't article-shaped — e.g. an app dashboard, search results), feed `document.body.innerHTML` to Turndown directly. Last-resort fallback is `document.body.innerText` trimmed and collapsed.
+  - Choosing Markdown over HTML is deliberate: the bot's consumer is an LLM agent, and Markdown is dramatically more token-efficient than HTML while preserving the structural cues (headings, lists, links, code blocks) the agent needs.
   - Pure with respect to a given DOM — testable with jsdom.
 
 - **Settings store**. Thin wrapper over `chrome.storage.local` exposing `getConfig()` / `setConfig()` returning/accepting `{ botToken, chatId }`. Validates non-empty strings.
@@ -83,20 +90,29 @@ Four runtime surfaces:
 
 ### Message format (sent to Telegram)
 
-Plain text (no Markdown parse mode in v1 to avoid escaping bugs). Layout:
+The message body is Markdown, but sent **without** Telegram's `parse_mode` set — i.e. Telegram treats it as plain text and does not attempt to render or validate the Markdown. The agent consuming the bot's chat is the intended reader of the Markdown; Telegram is just the transport. This sidesteps Telegram's strict MarkdownV2 escaping rules entirely.
+
+Layout:
 
 ```
-<title>
+source: browser
+
+# <title>
 <url>
 
-— Selection —
-<selection text, or omitted entirely if empty>
+## Selection
+<selection text, or section omitted entirely if empty>
 
-— Note —
-<user note, or omitted entirely if empty>
+## Note
+<user note, or section omitted entirely if empty>
+
+## Page
+<bodyMarkdown>
 ```
 
-If the assembled body exceeds 4096 characters, the dispatcher splits on paragraph boundaries where possible, else on character boundaries, and prepends `(n/N)` to each part.
+The first line is a fixed `source: browser` tag. It's terse on purpose — a machine-readable marker the agent can key off to recognize browser-originated dispatches. A human skimming the chat sees it once and ignores it.
+
+If the assembled body exceeds 4096 characters, the dispatcher splits on paragraph boundaries where possible, else on character boundaries, and prepends `(n/N)` to each part. The `source: browser` tag is repeated on every part so each chunk is independently identifiable.
 
 ### Configuration & secrets
 
@@ -128,9 +144,15 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
   - Returns the array of returned `message_id`s on success.
 
 - **Page capture extractor** — jsdom. Cover:
-  - Extracts title, URL, and body text from a synthetic document.
+  - Extracts title, URL, and `bodyMarkdown` from a synthetic article-shaped document; the result is Markdown (has `#`/`##` headings, list syntax, link syntax — no raw HTML tags).
+  - Strips nav/footer/script boilerplate: a fixture with `<nav>`, `<script>`, and an article body produces Markdown containing only the article body.
+  - Falls back to a Turndown-of-`document.body` conversion when Readability returns null, and to `innerText` when even that yields nothing.
   - Returns the current selection text when one exists, empty string otherwise.
-  - Collapses runs of whitespace in body text.
+
+- **Message composer** (part of the dispatcher or a sibling helper). Vitest. Cover:
+  - The first line of the composed body is exactly `source: browser`.
+  - When the body is split across multiple messages, every part begins with `source: browser` followed by the `(n/N)` prefix.
+  - Sections (`## Selection`, `## Note`) are omitted entirely when their content is empty; `## Page` is always present when `bodyMarkdown` is non-empty.
 
 **Out of scope for tests:**
 
@@ -144,8 +166,7 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 
 - Receiving messages from the Telegram bot (one-way only by design).
 - Multiple recipient bots/chats or per-message recipient selection.
-- Markdown/HTML formatting in the Telegram message (plain text in v1).
-- Readability-grade article extraction (basic `innerText` is enough for v1).
+- Telegram-side Markdown rendering (we send Markdown as plain text without `parse_mode`; the LLM agent is the reader, not Telegram's renderer).
 - A persistent send history or queue in the extension.
 - Automatic retry on failure.
 - Firefox / Safari / Edge support. Chrome-only v1.
@@ -158,5 +179,6 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 
 - Project naming: the working title and repo name is **nano-dispatch**. The user-facing extension name should also be "nano-dispatch" unless the user decides otherwise before publishing.
 - The screenshot the user referenced (Claude.ai's right-hand sidebar with "Mention Tabs", selected text chip, and a "Write a message…" composer) is the visual reference for the side panel's shape and information density. Match that pattern: small header showing the source, a visible chip/block for the selection, a roomy composer, a single primary action.
-- No build pipeline is mandated. Plain JS in MV3 will work; a tiny bundler (esbuild/Vite) is acceptable if it makes the dispatcher's unit tests easier.
+- A small bundler is now effectively required because the content script depends on `@mozilla/readability` and `turndown` from npm. esbuild or Vite is fine — pick whichever is least ceremony. The dispatcher remains pure JS with no bundling dependency.
+- The choice of `@mozilla/readability` + `turndown` is a Lindy bet: both libraries have years of production use (Readability powers Firefox's reader mode; Turndown is the de-facto HTML→Markdown converter in the JS ecosystem). Not researched against newer alternatives by design — the goal is a boring, durable extraction pipeline, not the optimum on a benchmark.
 - No backend. The extension talks directly to `api.telegram.org`. The Telegram bot token's exposure surface is the user's own browser profile; that's an accepted trade-off for the no-infra design.
