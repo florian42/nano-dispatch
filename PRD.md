@@ -50,6 +50,11 @@ A small options page lets me paste my bot token and chat ID once.
 
 ## Implementation Decisions
 
+> Telegram dispatch protocol details and token-handling security invariants
+> live in [`docs/telegram-dispatch.md`](docs/telegram-dispatch.md). The notes
+> below stay high-level; the companion doc is the source of truth for the
+> dispatcher module.
+
 ### Architecture overview
 
 Four runtime surfaces:
