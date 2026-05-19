@@ -6,7 +6,7 @@ describe('splitForTelegram', () => {
   const base = {
     url: 'https://example.com/post',
     title: 'Hello',
-    bodyMarkdown: '# Article\n\nfirst paragraph',
+    bodyHtml: '# Article\n\nfirst paragraph',
   };
 
   it('returns a single part identical to composeBody when under the limit', () => {
@@ -16,10 +16,10 @@ describe('splitForTelegram', () => {
     expect(parts[0]).not.toMatch(/\(\d+\/\d+\)/);
   });
 
-  it('splits long bodyMarkdown into ordered parts under the limit, each tagged with (n/N)', () => {
+  it('splits long bodyHtml into ordered parts under the limit, each tagged with (n/N)', () => {
     const para = 'lorem ipsum dolor sit amet '.repeat(40); // ~1080 chars
     const longBody = Array.from({ length: 10 }, () => para).join('\n\n'); // ~10800 chars
-    const parts = splitForTelegram({ ...base, bodyMarkdown: longBody });
+    const parts = splitForTelegram({ ...base, bodyHtml: longBody });
 
     expect(parts.length).toBeGreaterThan(1);
     const N = parts.length;
@@ -35,7 +35,7 @@ describe('splitForTelegram', () => {
       ...base,
       selection: 'the quote',
       note: 'the note',
-      bodyMarkdown: longPage,
+      bodyHtml: longPage,
     });
 
     expect(parts.length).toBeGreaterThan(1);
@@ -60,7 +60,7 @@ describe('splitForTelegram', () => {
     const paraC = 'C'.repeat(2500);
     const parts = splitForTelegram({
       ...base,
-      bodyMarkdown: `${paraA}\n\n${paraB}\n\n${paraC}`,
+      bodyHtml: `${paraA}\n\n${paraB}\n\n${paraC}`,
     });
 
     expect(parts.length).toBeGreaterThan(1);

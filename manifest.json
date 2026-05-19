@@ -6,7 +6,7 @@
   "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs"],
   "host_permissions": ["https://api.telegram.org/*"],
   "background": {
-    "service_worker": "service-worker.js",
+    "service_worker": "background/service-worker.js",
     "type": "module"
   },
   "side_panel": {
@@ -19,7 +19,7 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["selection-stream.js"],
+      "js": ["content/selection-stream.js"],
       "all_frames": false,
       "run_at": "document_idle"
     }

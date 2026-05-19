@@ -1,8 +1,14 @@
 import { dispatch } from '../dispatcher/dispatch.js';
 import type { DispatchResult, DispatchPayload } from '../dispatcher/types.js';
 import { getConfig, configValid } from '../shared/settings.js';
-import type { CaptureResult } from '../capture/extract.js';
 import type { SendRequest } from '../shared/messages.js';
+
+interface PageCapture {
+  url: string;
+  title: string;
+  selection: string;
+  bodyHtml: string;
+}
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
   /* may not be supported on older Chrome */
@@ -56,29 +62,25 @@ async function handleSend(req: SendRequest): Promise<DispatchResult> {
     title: capture.title,
     selection: capture.selection,
     note: req.note,
-    bodyMarkdown: capture.bodyMarkdown,
+    bodyHtml: capture.bodyHtml,
   };
 
   return await dispatch(payload, cfg);
 }
 
-async function runCapture(tabId: number): Promise<CaptureResult | null> {
+async function runCapture(tabId: number): Promise<PageCapture | null> {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['capture.js'],
-    });
     const [first] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => {
-        const g = globalThis as typeof globalThis & { __nanoDispatchResult?: unknown };
-        const r = g.__nanoDispatchResult;
-        delete g.__nanoDispatchResult;
-        return r;
-      },
+      func: () => ({
+        url: location.href,
+        title: document.title,
+        selection: window.getSelection()?.toString() ?? '',
+        bodyHtml: document.body.innerHTML,
+      }),
     });
     const result = first?.result;
-    return isCaptureResult(result) ? result : null;
+    return isPageCapture(result) ? result : null;
   } catch {
     return null;
   }
@@ -90,14 +92,14 @@ function isSendRequest(v: unknown): v is SendRequest {
   return o['type'] === 'send' && typeof o['tabId'] === 'number' && typeof o['note'] === 'string';
 }
 
-function isCaptureResult(v: unknown): v is CaptureResult {
+function isPageCapture(v: unknown): v is PageCapture {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   return (
     typeof o['url'] === 'string' &&
     typeof o['title'] === 'string' &&
     typeof o['selection'] === 'string' &&
-    typeof o['bodyMarkdown'] === 'string'
+    typeof o['bodyHtml'] === 'string'
   );
 }
 

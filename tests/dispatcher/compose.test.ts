@@ -5,7 +5,7 @@ describe('composeBody', () => {
   const base = {
     url: 'https://example.com/post',
     title: 'Hello, world',
-    bodyMarkdown: '# Article\n\nfirst paragraph',
+    bodyHtml: '# Article\n\nfirst paragraph',
   };
 
   it('renders source tag, title+url, and all three sections for a full payload', () => {
@@ -14,7 +14,7 @@ describe('composeBody', () => {
       title: 'Hello, world',
       selection: 'a notable quote',
       note: 'worth re-reading',
-      bodyMarkdown: '# Article\n\nfirst paragraph',
+      bodyHtml: '# Article\n\nfirst paragraph',
     });
 
     expect(body).toBe(
@@ -51,8 +51,8 @@ describe('composeBody', () => {
     expect(body).toContain('## Selection');
   });
 
-  it('omits the Page section when bodyMarkdown is empty', () => {
-    const body = composeBody({ ...base, bodyMarkdown: '' });
+  it('omits the Page section when bodyHtml is empty', () => {
+    const body = composeBody({ ...base, bodyHtml: '' });
     expect(body).not.toContain('## Page');
   });
 

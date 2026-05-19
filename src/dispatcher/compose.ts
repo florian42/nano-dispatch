@@ -13,8 +13,8 @@ export function composeBody(payload: DispatchPayload): string {
     lines.push('', '## Note', payload.note);
   }
 
-  if (payload.bodyMarkdown.length > 0) {
-    lines.push('', '## Page', payload.bodyMarkdown);
+  if (payload.bodyHtml.length > 0) {
+    lines.push('', '## Page', payload.bodyHtml);
   }
 
   return lines.join('\n');

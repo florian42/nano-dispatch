@@ -1,7 +1,7 @@
 export type DispatchPayload = {
   url: string;
   title: string;
-  bodyMarkdown: string;
+  bodyHtml: string;
   selection?: string;
   note?: string;
 };

@@ -17,7 +17,7 @@ export function splitForTelegram(payload: DispatchPayload): string[] {
     framePieces.push('', '## Note', payload.note);
   }
   const part1Frame = framePieces.join('\n') + '\n\n## Page\n';
-  const pageContent = payload.bodyMarkdown;
+  const pageContent = payload.bodyHtml;
 
   if (part1Frame.length >= PER_PART_BODY_BUDGET) {
     return splitDegenerate(composed);

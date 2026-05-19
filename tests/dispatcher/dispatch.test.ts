@@ -31,7 +31,7 @@ const config: DispatchConfig = { botToken: 'TKN', chatId: 'CHAT' };
 const payload: DispatchPayload = {
   url: 'https://example.com/post',
   title: 'Hello',
-  bodyMarkdown: 'a page',
+  bodyHtml: 'a page',
 };
 
 describe('dispatch', () => {
@@ -58,7 +58,7 @@ describe('dispatch', () => {
       jsonResponse({ ok: true, result: { message_id: 3 } }),
     ]);
 
-    const result = await dispatch({ ...payload, bodyMarkdown: longPage }, config, fn);
+    const result = await dispatch({ ...payload, bodyHtml: longPage }, config, fn);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -146,7 +146,7 @@ describe('dispatch', () => {
         429,
       ),
     ]);
-    const result = await dispatch({ ...payload, bodyMarkdown: longPage }, config, fn);
+    const result = await dispatch({ ...payload, bodyHtml: longPage }, config, fn);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('rate_limited');

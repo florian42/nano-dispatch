@@ -1,6 +1,6 @@
 # ADR-0002: Two-step capture injection (stash-and-read on isolated globalThis)
 
-Status: Accepted
+Status: **Superseded by [ADR-0006](./0006-raw-html-capture.md)** (2026-05-19)
 Date: 2026-05-19
 
 ## Context
