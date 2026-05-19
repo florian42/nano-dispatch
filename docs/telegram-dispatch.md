@@ -86,19 +86,38 @@ source: browser
 ## 4. Splitting
 
 If the assembled body exceeds **4096 characters** (Telegram's per-message
-limit), the dispatcher splits into ordered parts:
+limit), the dispatcher splits **section-anchored**:
 
-1. Prefer splitting on paragraph boundaries (blank lines).
-2. Fall back to character boundaries if a single paragraph exceeds the limit.
-3. Prepend `(n/N)` to each part after the `source: browser` tag.
-4. Repeat the `source: browser` tag on every part so each chunk is
+- **Part 1** always carries: `source: browser`, the `(n/N)` marker (when
+  N ≥ 2), the `# <title>` line, the `<url>` line, the full `## Selection`
+  section (if present), the full `## Note` section (if present), and as much
+  of `## Page` as fits within the part-1 budget.
+- **Parts 2..N** are pure `## Page` continuation. The structural sections
+  (`## Selection`, `## Note`) are **not** repeated on later parts — they
+  belong to part 1's structural frame.
+
+Rules:
+
+1. Per-part header budget is fixed at **64 chars** (`source: browser\n(n/N)\n\n`
+   even at N=99 fits comfortably). Effective body budget per part = **4032**.
+2. Prefer splitting on paragraph boundaries (blank lines) within `## Page`.
+3. Fall back to character boundaries if a single paragraph exceeds the
+   budget.
+4. The `source: browser` tag is repeated on every part so each chunk is
    independently identifiable in the chat.
+5. The `(n/N)` marker appears **only when N ≥ 2**. Single-part sends do not
+   carry it.
+6. **No trailing `(end)` marker.** `(n/N)` with `n == N` already signals the
+   last part; a redundant marker adds noise.
 
 Parts are sent **sequentially**, not in parallel — order matters for the
 reader, and Telegram's rate limits are friendlier to serial sends.
 
-**[from sending thread]** — confirm the exact split-marker placement and
-whether we want a trailing `(end)` indicator on the last part.
+**Degenerate case:** if the headers + Selection + Note alone exceed the
+part-1 budget (e.g. a 5000-char user selection), the Selection or Note
+sections themselves may split across parts. This is rare; the dispatcher
+does the simplest possible character-boundary split rather than refusing.
+"Weird input, weird output, still arrives" is the chosen behaviour.
 
 ---
 
@@ -115,12 +134,23 @@ Telegram API errors are normalised to the discriminants in §2:
 | Anything else                             | `unknown`        | Stuff the raw `description` in `detail`.        |
 
 On **partial-success splits** (part 1 sent, part 2 fails): the PRD's "no retry
-queue" decision applies — return `{ ok: false, ... }` with the IDs of the
-parts that *did* send in `detail`, so the user can decide what to do. Draft is
-preserved either way (PRD user story #21).
+queue" decision applies. The dispatcher returns `{ ok: false, reason, detail }`
+where:
 
-**[from sending thread]** — confirm partial-success behaviour and what `detail`
-should contain for it.
+- `reason` is the discriminant from the **failing** part's response (e.g.
+  `rate_limited` if part 2 hit a 429).
+- `detail` is a structured string of the form
+  `"sent message_ids: [id1, id2]; failed at part 3/7: <description>"`.
+  This gives the user enough information to recover manually (they know
+  which parts landed and where to resume if they retry).
+
+The dispatcher does **not** auto-retry rate-limited sends in v1, nor does it
+throttle the inter-part interval pre-emptively — `rate_limited` is surfaced
+honestly. If the user is regularly hitting it on long articles, the answer is
+shorter articles or a future v2 throttle option, not silent backoff that
+delays user feedback.
+
+Draft is preserved either way (PRD user story #21).
 
 ---
 
@@ -241,6 +271,12 @@ OWASP browser-extension cheat-sheet item: "Avoid using `eval()` and
 - Do not echo the token elsewhere in the UI (no "saved: 1234…abcd" preview).
 - On dispatch errors, surface the `reason` discriminant, not the underlying
   Telegram response body.
+- **"Test connection" button** is permitted and recommended. It calls
+  `getMe` + `getChat` and displays only **public, API-derived** metadata —
+  the bot's `username` (the `@handle`, already public) and the chat's
+  `title` / `first_name`. It must never display, echo, or hint at the token.
+  The verification panel renders separately from the token input to avoid
+  any "saved-token confirmation" pattern.
 
 ---
 
@@ -257,10 +293,9 @@ on invariant #6.3.2.
 
 ## 9. Open questions / not yet decided
 
-- **[from sending thread]** Exact wire format and any deviation from §3.
-- **[from sending thread]** Whether to retry transient `network` failures
-  inside the dispatcher (PRD currently says no retry queue — confirm this
-  applies to the single-request case too).
+- Whether to retry transient `network` failures inside the dispatcher for the
+  single-request (unsplit) case. The PRD's "no retry queue" decision points
+  toward "no" here too — confirm explicitly when implementing.
 - Optional v2: passphrase-derived AES-GCM encryption of the token via
   WebCrypto, prompted at first use per browser session. High UX cost; only
   worth it if the extension is ever published.
