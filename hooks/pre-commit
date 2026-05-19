@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Block commits that contain secrets. Scans only the staged diff so it stays fast.
+# Bypass (use with extreme caution): SKIP_SECRET_SCAN=1 git commit ...
+
+set -euo pipefail
+
+if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
+    echo "pre-commit: SKIP_SECRET_SCAN=1 set — skipping secret scan." >&2
+    exit 0
+fi
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+pre-commit: gitleaks is not installed.
+
+Install it:
+    brew install gitleaks            # macOS
+    # or see https://github.com/gitleaks/gitleaks for other platforms
+
+Refusing to commit without a secret scanner. To override (NOT RECOMMENDED):
+    SKIP_SECRET_SCAN=1 git commit ...
+EOF
+    exit 1
+fi
+
+# --staged scans only what's about to be committed.
+# --redact hides the matched secret value from terminal output.
+# Config lookup is automatic (.gitleaks.toml at repo root).
+if ! gitleaks git --staged --redact --no-banner; then
+    cat >&2 <<'EOF'
+
+pre-commit: gitleaks detected a potential secret in your staged changes.
+Commit BLOCKED.
+
+If this is a false positive, add an entry to .gitleaks.toml's [allowlist]
+rather than bypassing the hook.
+
+Real emergency override (you will regret this):
+    SKIP_SECRET_SCAN=1 git commit ...
+EOF
+    exit 1
+fi

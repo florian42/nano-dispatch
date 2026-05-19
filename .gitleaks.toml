@@ -1,0 +1,22 @@
+# gitleaks config for nano-dispatch.
+# Extends the bundled default ruleset with an extra rule for Telegram bot tokens,
+# which is the specific credential this project handles.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "telegram-bot-token"
+description = "Telegram Bot API token"
+# Format: <numeric bot id>:<35-char base64url-ish secret>
+regex = '''[0-9]{8,12}:[A-Za-z0-9_-]{35}'''
+keywords = ["bot", "telegram", "TELEGRAM_BOT_TOKEN"]
+
+[allowlist]
+description = "Paths that contain illustrative examples, not real secrets."
+paths = [
+    '''\.gitleaks\.toml$''',
+    '''(^|/)PRD\.md$''',
+    '''(^|/)README\.md$''',
+    '''(^|/)docs/''',
+]

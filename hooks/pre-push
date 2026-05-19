@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Defense-in-depth: scan the full range of commits being pushed.
+# Catches anything that slipped past pre-commit (e.g. local commits made before
+# the hook was installed, or amended after a bypass).
+# Bypass (use with extreme caution): SKIP_SECRET_SCAN=1 git push ...
+
+set -euo pipefail
+
+if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
+    echo "pre-push: SKIP_SECRET_SCAN=1 set — skipping secret scan." >&2
+    exit 0
+fi
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "pre-push: gitleaks not installed. Install with: brew install gitleaks" >&2
+    exit 1
+fi
+
+# git provides "<local_ref> <local_sha> <remote_ref> <remote_sha>" per line on stdin.
+zero="0000000000000000000000000000000000000000"
+failed=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [[ -z "${local_sha:-}" ]] && continue
+    # Branch deletion (local_sha == zero) — nothing to scan.
+    [[ "$local_sha" == "$zero" ]] && continue
+
+    if [[ "$remote_sha" == "$zero" ]]; then
+        # New branch on the remote — scan everything reachable from local_sha
+        # that's not already on any other remote ref.
+        range="$local_sha --not --remotes"
+    else
+        range="${remote_sha}..${local_sha}"
+    fi
+
+    echo "pre-push: scanning $range for secrets..." >&2
+    if ! gitleaks git --redact --log-opts="$range" --no-banner; then
+        failed=1
+    fi
+done
+
+if [[ $failed -ne 0 ]]; then
+    cat >&2 <<'EOF'
+
+pre-push: gitleaks detected secrets in commits being pushed.
+Push BLOCKED.
+
+Fix it by rewriting the offending commits (git rebase -i, git filter-repo, etc.)
+BEFORE this ever reaches the remote. Once it's on a public remote, the secret
+must be considered compromised — rotate it.
+
+Real emergency override (you will regret this):
+    SKIP_SECRET_SCAN=1 git push ...
+EOF
+    exit 1
+fi
