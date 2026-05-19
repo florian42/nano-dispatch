@@ -2,6 +2,15 @@
 
 A Chrome browser extension that dispatches the current page's context plus a personal note to a Telegram bot (`nanoclaw`) from a sidebar UI. One-way send only.
 
+> **Implementation status (2026-05-19).** As-built deviates from this PRD in
+> one notable place: the Readability + Turndown extraction pipeline (User
+> Stories #25 and #26, plus the Page Capture module) was dropped in favour
+> of sending `document.body.innerHTML` verbatim. See
+> [`docs/adr/0006-raw-html-capture.md`](docs/adr/0006-raw-html-capture.md)
+> for the trade. Other ADRs in `docs/adr/` cover smaller divergences.
+> User stories #25 and #26 below are kept as historical record of the
+> original intent.
+
 ## Problem Statement
 
 When I'm reading something in the browser — an article, a docs page, a thread — and I want to capture it for later or hand it off to my `nanoclaw` Telegram bot, my current options are clumsy: copy-paste the URL, copy-paste the relevant selection, type a note in Telegram, switch apps. The friction means I either don't capture things or I capture them with missing context (no source URL, no surrounding paragraph). I want a one-keystroke way to ship "what I'm looking at + what I highlighted + what I want to say about it" into `nanoclaw`, without leaving the page.
@@ -44,8 +53,8 @@ A small options page lets me paste my bot token and chat ID once.
 22. As a user, I want the extension to work on standard `http(s)://` pages, so that any normal article or docs page is dispatchable.
 23. As a user, I want a graceful "this page can't be captured" message on restricted pages (chrome://, web store, PDF viewer), so that I'm not confused when the sidebar can't read the page.
 24. As a user, I want the extension to work without an external server — just the extension talking to Telegram directly — so that there's no infrastructure for me to operate.
-25. As a user whose Telegram bot is consumed by an LLM agent, I want the page content sent as Markdown rather than HTML, so that the agent receives a compact, well-structured payload instead of paying token cost for tag soup.
-26. As a user whose Telegram bot is consumed by an LLM agent, I want the page content stripped of boilerplate (nav, footers, ads, scripts) before conversion, so that the agent sees the article body and not the chrome around it.
+25. ~~As a user whose Telegram bot is consumed by an LLM agent, I want the page content sent as Markdown rather than HTML, so that the agent receives a compact, well-structured payload instead of paying token cost for tag soup.~~ *(Not implemented — see ADR-0006.)*
+26. ~~As a user whose Telegram bot is consumed by an LLM agent, I want the page content stripped of boilerplate (nav, footers, ads, scripts) before conversion, so that the agent sees the article body and not the chrome around it.~~ *(Not implemented — see ADR-0006.)*
 27. As a user whose Telegram bot is consumed by an LLM agent, I want every dispatch to carry a short machine-readable marker identifying it as having come from the browser extension, so that the agent can route or label browser-originated messages distinctly from other inputs to the bot.
 
 ## Implementation Decisions
@@ -61,7 +70,7 @@ Four runtime surfaces:
 
 - **Side panel** (HTML/JS) — the user-facing UI rendered via Chrome's `chrome.sidePanel` API.
 - **Selection-stream content script** — declared in `content_scripts`, runs automatically on every `http(s)` page. Top frame only. Does one thing: listens to `selectionchange` (debounced ~150 ms) and posts the current selection text to the side panel. No DOM mutation, no token access, no `fetch`. See "Selection streaming" below.
-- **Capture content script** — heavier extractor (Readability + Turndown) injected on demand via `chrome.scripting.executeScript` when the user presses Send. Rides the user-gesture path; not always-on.
+- **Capture content script** — heavier extractor (Readability + Turndown) injected on demand via `chrome.scripting.executeScript` when the user presses Send. Rides the user-gesture path; not always-on. *(Superseded by ADR-0006: capture is now a single inline `func` in the service worker that returns `document.body.innerHTML`. No separate capture content script.)*
 - **Service worker** — orchestrates: receives "send" from the side panel, requests a capture from the active tab, hands the payload to the dispatcher, reports status back to the side panel.
 - **Options page** — for bot token + chat ID configuration.
 
@@ -74,7 +83,8 @@ Four runtime surfaces:
   - Responsible for: composing the message body, splitting on Telegram's 4096-character limit into multiple ordered messages, calling `api.telegram.org/bot<token>/sendMessage`, normalizing errors.
   - Zero DOM, zero chrome.* — just `fetch` + plain data. Lives in its own file so it can be unit-tested under Node/Vitest.
 
-- **Page capture**. Fresh `scripting.executeScript` injection per Send — the capture bundle (Readability + Turndown + glue) is loaded into the tab only on user gesture, computes, returns its result as the last-evaluated value of `executeScript`, and is gone. No resident listener, no per-tab state to track across navigations or SW idle, no parsing cost on tabs the user never dispatches from. Single entry point `capture(tab)`:
+- **Page capture**. *(Section superseded by ADR-0006 — the as-built capture is a single inline `func` in the service worker returning `{ url, title, selection, bodyHtml: document.body.innerHTML }`. The Readability + Turndown pipeline below was the original plan and is preserved here as historical record.)*
+  Fresh `scripting.executeScript` injection per Send — the capture bundle (Readability + Turndown + glue) is loaded into the tab only on user gesture, computes, returns its result as the last-evaluated value of `executeScript`, and is gone. No resident listener, no per-tab state to track across navigations or SW idle, no parsing cost on tabs the user never dispatches from. Single entry point `capture(tab)`:
   - Returns `{ url, title, selection, bodyMarkdown }`.
   - `selection` is whatever `window.getSelection().toString()` produces at capture time; empty string if none.
   - `bodyMarkdown` is produced by a two-stage pipeline:
@@ -112,13 +122,15 @@ Resolution — **hybrid permissions**:
 
 - **Always-on selection-stream content script** declared via a manifest `content_scripts` entry matching `http(s)://*/*`. Deliberately minimal: reads `window.getSelection().toString()` on `selectionchange`, debounces ~150 ms, calls `chrome.runtime.sendMessage` with `{ type: 'selection', text }`. Holds no token, performs no `fetch`, mutates no DOM. This is the only justification for the broad `http(s)` match — keep it that way.
 - **Top frame only** (`all_frames: false`). Selections inside iframes (embedded gists, sandboxed widgets, post embeds) are accepted as a known gap. Rationale: every additional frame the script runs in is install-prompt and review surface; the minimalism is worth more than catching iframe selections.
-- **Heavy capture (Readability + Turndown)** is not always-on. It runs via `chrome.scripting.executeScript` on the active tab in response to the Send click — i.e., user-gesture path, no broad permission required for the extractor itself.
+- ~~**Heavy capture (Readability + Turndown)** is not always-on. It runs via `chrome.scripting.executeScript` on the active tab in response to the Send click — i.e., user-gesture path, no broad permission required for the extractor itself.~~ *(Superseded by ADR-0006: capture is a single inline `func` returning `document.body.innerHTML`, still user-gesture-only via `activeTab` + `scripting`.)*
 
 The side panel is the listener for `{ type: 'selection', ... }` messages — it adds its own `chrome.runtime.onMessage` handler rather than relaying through the service worker. Reason: selection updates fire continuously during a drag and would otherwise resurrect the MV3 service worker for purely UI-bound traffic. Both the side panel and the service worker validate `sender.id === chrome.runtime.id` via a shared helper (see `docs/telegram-dispatch.md` §7.3).
 
 ### Message format (sent to Telegram)
 
 The message body is Markdown, but sent **without** Telegram's `parse_mode` set — i.e. Telegram treats it as plain text and does not attempt to render or validate the Markdown. The agent consuming the bot's chat is the intended reader of the Markdown; Telegram is just the transport. This sidesteps Telegram's strict MarkdownV2 escaping rules entirely.
+
+> *As-built (ADR-0006): the wrapper is still Markdown-shaped but the `## Page` section now contains raw `document.body.innerHTML` instead of a Markdown conversion. Field renamed `bodyMarkdown` → `bodyHtml`.*
 
 Layout:
 
@@ -135,7 +147,7 @@ source: browser
 <user note, or section omitted entirely if empty>
 
 ## Page
-<bodyMarkdown>
+<bodyHtml>
 ```
 
 The first line is a fixed `source: browser` tag. It's terse on purpose — a machine-readable marker the agent can key off to recognize browser-originated dispatches. A human skimming the chat sees it once and ignores it.
@@ -181,16 +193,22 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
   - Maps Telegram error responses (`401`, `400 chat not found`, `429`, network exception) to the documented `reason` discriminants.
   - Returns the array of returned `message_id`s on success.
 
-- **Page capture extractor** — jsdom. Cover:
-  - Extracts title, URL, and `bodyMarkdown` from a synthetic article-shaped document; the result is Markdown (has `#`/`##` headings, list syntax, link syntax — no raw HTML tags).
-  - Strips nav/footer/script boilerplate: a fixture with `<nav>`, `<script>`, and an article body produces Markdown containing only the article body.
-  - Falls back to a Turndown-of-`document.body` conversion when Readability returns null, and to `innerText` when even that yields nothing.
-  - Returns the current selection text when one exists, empty string otherwise.
+- ~~**Page capture extractor** — jsdom. Cover:~~ *(Removed per ADR-0006 — there's no extractor to test; capture is a 4-line inline `func`.)*
+  - ~~Extracts title, URL, and `bodyMarkdown` from a synthetic article-shaped document; the result is Markdown (has `#`/`##` headings, list syntax, link syntax — no raw HTML tags).~~
+  - ~~Strips nav/footer/script boilerplate: a fixture with `<nav>`, `<script>`, and an article body produces Markdown containing only the article body.~~
+  - ~~Falls back to a Turndown-of-`document.body` conversion when Readability returns null, and to `innerText` when even that yields nothing.~~
+  - ~~Returns the current selection text when one exists, empty string otherwise.~~
+
+- **Side-panel controller** — vitest + @testing-library/dom (jsdom env). *(Added beyond the original PRD; see ADR-0003.)* Cover:
+  - Mount renders the active tab's title/URL and a "no selection" chip; live selection events from the current tab update the chip; events from other tabs are ignored.
+  - Per-tab draft restored on mount; persisted after a 250 ms debounce on input; cleared on a successful Send.
+  - Send happy path clears the textarea and shows "Sent (N messages)"; failure preserves textarea and surfaces `reason — detail`.
+  - Missing-config gating; Cmd/Ctrl+Enter shortcut; options-link click; tab-update refresh.
 
 - **Message composer** (part of the dispatcher or a sibling helper). Vitest. Cover:
   - The first line of the composed body is exactly `source: browser`.
   - When the body is split across multiple messages, every part begins with `source: browser` followed by the `(n/N)` prefix.
-  - Sections (`## Selection`, `## Note`) are omitted entirely when their content is empty; `## Page` is always present when `bodyMarkdown` is non-empty.
+  - Sections (`## Selection`, `## Note`) are omitted entirely when their content is empty; `## Page` is always present when `bodyHtml` is non-empty.
 
 **Out of scope for tests:**
 
@@ -217,6 +235,6 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 
 - Project naming: the working title and repo name is **nano-dispatch**. The user-facing extension name should also be "nano-dispatch" unless the user decides otherwise before publishing.
 - The screenshot the user referenced (Claude.ai's right-hand sidebar with "Mention Tabs", selected text chip, and a "Write a message…" composer) is the visual reference for the side panel's shape and information density. Match that pattern: small header showing the source, a visible chip/block for the selection, a roomy composer, a single primary action.
-- A small bundler is now effectively required because the content script depends on `@mozilla/readability` and `turndown` from npm. esbuild or Vite is fine — pick whichever is least ceremony. The dispatcher remains pure JS with no bundling dependency.
-- The choice of `@mozilla/readability` + `turndown` is a Lindy bet: both libraries have years of production use (Readability powers Firefox's reader mode; Turndown is the de-facto HTML→Markdown converter in the JS ecosystem). Not researched against newer alternatives by design — the goal is a boring, durable extraction pipeline, not the optimum on a benchmark.
+- ~~A small bundler is now effectively required because the content script depends on `@mozilla/readability` and `turndown` from npm. esbuild or Vite is fine — pick whichever is least ceremony. The dispatcher remains pure JS with no bundling dependency.~~ *(Superseded by ADR-0006 — extraction pipeline dropped, so no bundler. Build is `tsc -p tsconfig.build.json` + three `cp`s.)*
+- ~~The choice of `@mozilla/readability` + `turndown` is a Lindy bet: both libraries have years of production use (Readability powers Firefox's reader mode; Turndown is the de-facto HTML→Markdown converter in the JS ecosystem). Not researched against newer alternatives by design — the goal is a boring, durable extraction pipeline, not the optimum on a benchmark.~~ *(Superseded by ADR-0006 — those libraries are no longer used.)*
 - No backend. The extension talks directly to `api.telegram.org`. The Telegram bot token's exposure surface is the user's own browser profile; that's an accepted trade-off for the no-infra design.

@@ -6,6 +6,14 @@ lives, is read, and is used. Security invariants and protocol details live
 together here on purpose: future readers see the constraints right where they'd
 be tempted to violate them.
 
+> **As-built note (2026-05-19).** The dispatcher's payload field is named
+> `bodyHtml`, not `bodyMarkdown`, and the `## Page` section now carries raw
+> `document.body.innerHTML` rather than Markdown extracted via Readability +
+> Turndown. The PRD's User Stories #25 and #26 were dropped in favour of
+> simpler capture — see [`adr/0006-raw-html-capture.md`](adr/0006-raw-html-capture.md).
+> The rest of this document (composition, splitting, error mapping, token
+> handling, security invariants) is accurate as-built.
+
 > Status: draft. Sections marked **[from sending thread]** are placeholders for
 > the parallel discussion about how we send to Telegram and should be filled in
 > as those decisions land.
@@ -34,7 +42,7 @@ Single entry point:
 ```ts
 dispatch(payload, config): Promise<DispatchResult>
 
-payload: { url: string, title: string, selection?: string, note?: string, bodyMarkdown: string }
+payload: { url: string, title: string, selection?: string, note?: string, bodyHtml: string }
 config:  { botToken: string, chatId: string }
 
 DispatchResult =
@@ -54,10 +62,14 @@ content script. See §6.
 
 ## 3. Message composition
 
-The body is Markdown, sent **without** `parse_mode` set — Telegram treats it as
-plain text and does not attempt to render or validate the Markdown. The
-consumer of the bot's chat is an LLM agent; Telegram is just the transport.
-This sidesteps Telegram's MarkdownV2 escaping rules entirely.
+The wrapper (source tag, headings, separators) is Markdown-shaped but sent
+**without** `parse_mode` set — Telegram treats it as plain text and does not
+attempt to render or validate it. The consumer of the bot's chat is an LLM
+agent; Telegram is just the transport. This sidesteps Telegram's MarkdownV2
+escaping rules entirely.
+
+The `## Page` section contains raw HTML (`document.body.innerHTML` of the
+captured tab) — see ADR-0006. The agent is responsible for parsing it.
 
 Layout:
 
@@ -74,14 +86,14 @@ source: browser
 <user note, or section omitted entirely if empty>
 
 ## Page
-<bodyMarkdown>
+<bodyHtml>
 ```
 
 - The first line is a fixed `source: browser` tag — a machine-readable marker
   the downstream agent keys off to recognise browser-originated dispatches.
 - `## Selection` and `## Note` sections are omitted entirely when their content
   is empty (not rendered as empty headers).
-- `## Page` is always present when `bodyMarkdown` is non-empty.
+- `## Page` is always present when `bodyHtml` is non-empty.
 
 ## 4. Splitting
 
@@ -192,8 +204,9 @@ These are hard rules. Any change that violates them is a security regression.
 1. **The token is read only from the service worker.** The side-panel UI and
    options page may *write* the token (via the settings store wrapper); only
    the service worker may *read* it for dispatch.
-2. **The content script never sees the token.** The content script returns
-   `{ url, title, selection, bodyMarkdown }` to the service worker. The
+2. **The content script never sees the token.** The capture step (an
+   inline `func` injected via `chrome.scripting.executeScript`) returns
+   `{ url, title, selection, bodyHtml }` to the service worker. The
    service worker reads the token from storage and calls Telegram. There must
    be no import path from the content-script bundle to the settings store.
 3. **The token never appears in a `chrome.runtime.sendMessage` payload to or
