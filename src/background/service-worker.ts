@@ -1,4 +1,5 @@
 import { dispatch } from '../dispatcher/dispatch.js';
+import { createGramSender } from '../dispatcher/gramjs-sender.js';
 import type { DispatchResult, DispatchPayload } from '../dispatcher/types.js';
 import { getConfig, configValid } from '../shared/settings.js';
 import { isRestrictedUrl } from '../shared/tab-access.js';
@@ -32,12 +33,10 @@ chrome.action.onClicked.addListener((tab) => {
 });
 
 async function handleActionClick(tab: chrome.tabs.Tab): Promise<void> {
-  if (tab.windowId !== undefined) {
-    try {
-      await chrome.sidePanel.open({ windowId: tab.windowId });
-    } catch {
-      /* user may have closed the window or sidePanel.open is unsupported */
-    }
+  try {
+    await chrome.sidePanel.open({ windowId: tab.windowId });
+  } catch {
+    /* user may have closed the window or sidePanel.open is unsupported */
   }
   // Nudge the side panel to re-probe. The click just granted activeTab for
   // this tab, but tabs.onActivated does NOT fire when the same tab stays
@@ -71,7 +70,7 @@ async function handleSend(req: SendRequest): Promise<DispatchResult> {
     return {
       ok: false,
       reason: 'unauthorized',
-      detail: 'options not configured: paste your bot token and chat ID',
+      detail: 'options not configured: sign in to Telegram on the Options page',
     };
   }
 
@@ -88,7 +87,28 @@ async function handleSend(req: SendRequest): Promise<DispatchResult> {
     bodyHtml: capture.value.bodyHtml,
   };
 
-  return await dispatch(payload, cfg);
+  let gramSender;
+  try {
+    gramSender = await createGramSender({
+      apiId: cfg.apiId,
+      apiHash: cfg.apiHash,
+      session: cfg.session,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'network',
+      detail: stringify(err),
+    };
+  }
+
+  try {
+    return await dispatch(payload, cfg, gramSender);
+  } finally {
+    await gramSender.disconnect().catch(() => {
+      /* ignore — connection cleanup is best-effort */
+    });
+  }
 }
 
 function captureFailureToResult(failure: CaptureFailure): DispatchResult {
@@ -97,7 +117,8 @@ function captureFailureToResult(failure: CaptureFailure): DispatchResult {
       return {
         ok: false,
         reason: 'restricted_page',
-        detail: "Chrome blocks extensions from reading this page (chrome://, Web Store, file://, devtools, etc.).",
+        detail:
+          'Chrome blocks extensions from reading this page (chrome://, Web Store, file://, devtools, etc.).',
       };
     case 'no_access':
       return {
@@ -137,13 +158,14 @@ async function runCapture(tabId: number): Promise<CaptureResult> {
     const result = first?.result;
     if (isPageCapture(result)) return { kind: 'ok', value: result };
     return { kind: 'unknown', detail: 'executeScript returned an unexpected shape' };
-  } catch (err) {
+  } catch {
     // The most common throw here is "Cannot access contents of the page"
     // when activeTab hasn't been granted for this tab. Surface it as an
     // actionable reason rather than a generic failure.
     return {
       kind: 'no_access',
-      detail: 'Click the nano-dispatch toolbar icon on this tab to grant access here, then try again.',
+      detail:
+        'Click the nano-dispatch toolbar icon on this tab to grant access here, then try again.',
     };
   }
 }

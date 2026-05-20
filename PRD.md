@@ -5,7 +5,8 @@ A Chrome browser extension that dispatches the current page's context plus a per
 > ADRs in `docs/adr/` carry the historical record of decisions taken
 > after this PRD was drafted (raw HTML capture, simplified splitter,
 > dropped per-tab draft persistence, dropped live selection streaming,
-> dropped options Test-connection button). The PRD below reflects the
+> dropped options Test-connection button, **switch to MTProto
+> user-account dispatch** — ADR-0008). The PRD below reflects the
 > as-built shape.
 
 ## Problem Statement
@@ -20,9 +21,9 @@ A Chrome extension that lives in the browser side panel. While I read, the sideb
 - the current highlight (read once when the panel opens or when I switch tabs),
 - a textarea for a note I write myself.
 
-A "Send" button packages all three plus the page's HTML body into one Telegram message (split across messages if it exceeds 4096 chars) and pushes it to my `nanoclaw` bot. It's one-direction only: the extension sends, it does not read replies or listen for bot responses.
+A "Send" button packages all three plus the page's HTML body into one Telegram message (delivered as an HTML attachment with a caption) and pushes it to my `nanoclaw` bot — **sent from my own Telegram user account so the bot receives it as an inbound message and its update pipeline fires**. It's one-direction only: the extension sends, it does not read replies or listen for bot responses (stage 1 — see ADR-0008).
 
-A small options page lets me paste my bot token and chat ID once.
+A small options page walks me through Telegram sign-in once (phone, login code, optional 2FA password) and stores the resulting session string locally.
 
 ## User Stories
 
@@ -42,9 +43,9 @@ A small options page lets me paste my bot token and chat ID once.
 14. As a reader, I want messages that exceed Telegram's per-message size limit to be split into multiple ordered messages, so that everything arrives even when content is large.
 15. As a reader, I want the source URL to appear as the first line of the dispatched message, so that I can tap it in Telegram to jump back to the source.
 16. As a reader, I want the message formatted with clear sections (URL, selection, my note), so that it's scannable in the Telegram chat.
-17. As a first-time user, I want a one-time options page where I paste my Telegram bot token and chat ID, so that I can set up the extension without editing code.
-18. As a first-time user, I want the sidebar to nudge me to the options page when the bot token or chat ID is missing, so that I know why "Send" isn't working.
-19. As a user concerned about credentials, I want my bot token stored only in the browser's local extension storage and never transmitted anywhere except `api.telegram.org`, so that my bot stays under my control.
+17. As a first-time user, I want a one-time options page where I register an app at `my.telegram.org` and sign in to Telegram (phone + code + optional 2FA), so that I can set up the extension without editing code.
+18. As a first-time user, I want the sidebar to nudge me to the options page when Telegram sign-in is missing, so that I know why "Send" isn't working.
+19. As a user concerned about credentials, I want my Telegram session string stored only in the browser's local extension storage and never transmitted anywhere except Telegram's MTProto endpoints, so that my account stays under my control.
 20. As a user, I want the send action to fail loudly and clearly when Telegram rejects the request (bad token, wrong chat ID, network down), so that I'm not silently losing messages.
 21. As a user, I want failed sends to leave my draft intact, so that I can fix the problem and retry without retyping.
 22. As a user, I want the extension to work on standard `http(s)://` pages, so that any normal article or docs page is dispatchable.
@@ -71,16 +72,19 @@ No always-on content script. Capture and selection reads both ride the user-gest
 
 ### Modules
 
-- **Telegram dispatcher** (deep). Single entry point `dispatch(payload, config)`:
+- **Telegram dispatcher** (deep). Single entry point `dispatch(payload, config, sender)`:
   - `payload`: `{ url, title, bodyHtml, selection?, note? }`
-  - `config`: `{ botToken, chatId }`
+  - `config`: `{ apiId, apiHash, session, peer }`
+  - `sender`: a `Sender` port (see ADR-0010) — the production adapter wraps GramJS; tests pass an inline stub.
   - Returns a discriminated result: `{ ok: true, messageIds: number[] }` or `{ ok: false, reason: 'unauthorized' | 'bad_chat' | 'network' | 'rate_limited' | 'unknown', detail: string }`.
-  - Responsible for: composing the message body, splitting on Telegram's 4096-character limit into multiple ordered messages, calling `api.telegram.org/bot<token>/sendMessage`, normalizing errors.
-  - Zero DOM, zero chrome.* — just `fetch` + plain data. Lives in its own file so it can be unit-tested under Node/Vitest.
+  - Responsible for: composing the message as a caption + HTML attachment, calling `Sender.sendDocument`, normalizing GramJS RPC errors into the `reason` discriminants.
+  - Zero DOM, zero chrome.*, zero GramJS — just the `Sender` port + plain data. Lives in its own file so it can be unit-tested under Node/Vitest.
+
+- **GramJS sender adapter** (`src/dispatcher/gramjs-sender.ts`). The production `Sender`. Holds a connected `TelegramClient`, translates `client.sendFile(...)` results to `{ messageId }`, and re-throws GramJS errors with bare TL error names (`AUTH_KEY_UNREGISTERED`, `PEER_ID_INVALID`, `FLOOD_WAIT_30`) so the dispatcher's classifier can pattern-match. Transport failures get a `NETWORK_ERROR:` prefix.
 
 - **Page capture**. A 4-line inline `func` in the service worker, executed via `chrome.scripting.executeScript` on the active tab in response to Send. Returns `{ url, title, selection, bodyHtml: document.body.innerHTML }`. See ADR-0006 for why raw HTML and not Readability/Turndown Markdown.
 
-- **Settings store**. Thin wrapper over `chrome.storage.local` exposing `getConfig()` / `setConfig()` returning/accepting `{ botToken, chatId }`. Validates non-empty strings.
+- **Settings store**. Thin wrapper over `chrome.storage.local` exposing `getConfig()` / `setConfig()` / `clearSession()` returning/accepting `{ apiId, apiHash, session, peer }`. `configValid` requires all four to be present and non-empty (and `apiId` to be a positive finite number).
 
 - **Side panel UI**. Plain HTML + TypeScript (no React/Svelte/Preact). Responsibilities:
   - Subscribe to `chrome.tabs.onActivated` / `onUpdated` to refresh page context.
@@ -97,7 +101,7 @@ Strict TypeScript across every surface — dispatcher, service worker, side pane
 
 ### Build
 
-`tsc -p tsconfig.build.json` plus a few `cp`s, driven by `build.mjs` (~15 lines). One entry per surface (service worker, side panel, options page). No bundler. No minification — readable output is more valuable than a smaller bundle for a project this size. `manifest.json` is hand-written and copied verbatim into `dist/` by the build script.
+`esbuild` per entry (service worker, side panel, options page), driven by `build.mjs`. Bundling is required because GramJS is a CommonJS+ESM mix with conditional Node-built-in imports that Chrome's bare-specifier loader can't resolve — see ADR-0011. `tsc --noEmit` runs separately as `npm run typecheck`. No minification — readable bundles are more valuable than a smaller payload for a project this size. `manifest.json` is hand-written and copied verbatim into `dist/` by the build script.
 
 ### Message format (sent to Telegram)
 
@@ -129,14 +133,16 @@ Parts are sent serially. On partial failure (part 1 sent, part 2 fails), the dis
 
 ### Configuration & secrets
 
-- Bot token + chat ID live in `chrome.storage.local` (not `sync` — credentials shouldn't ride along with browser sync).
-- Options page is a separate HTML page reachable from the extension's action menu and via a "Configure" link in the side panel when config is missing.
+- App credentials (`apiId`, `apiHash`), recipient (`peer`), and the Telegram session string live in `chrome.storage.local` (not `sync` — credentials shouldn't ride along with browser sync).
+- Options page is a separate HTML page reachable from the extension's action menu and via a "Configure" link in the side panel when config is missing. It walks the user through phone → login code → optional 2FA password to mint a session string.
 - Save persists immediately. There is no in-options "Test connection" button — the dispatcher's first real send returns mapped errors (`unauthorized`, `bad_chat`, etc.) that surface in the side panel's status line. This is also the supported troubleshooting flow.
+- The Sign-out button calls `chrome.storage.local.remove('session')`, forcing a re-auth on next use. If the user suspects session leakage they should *also* terminate the session from another Telegram client (Settings → Active Sessions) — clearing local storage only invalidates this extension's copy, not Telegram's server-side record.
 
 ### Permissions (manifest v3)
 
 - `sidePanel`, `storage`, `activeTab`, `scripting`, `tabs`.
-- Host permissions: `https://api.telegram.org/*` only. No `<all_urls>` host permission. No `content_scripts` declaration — page reads (selection, body HTML) happen on user gesture via `activeTab` + `scripting`.
+- Host permissions: `https://*.web.telegram.org/*` and `wss://*.web.telegram.org/*` (MTProto WebSocket endpoints). No `<all_urls>` host permission. No `content_scripts` declaration — page reads (selection, body HTML) happen on user gesture via `activeTab` + `scripting`.
+- CSP `connect-src` matches the host permissions so the options page and side panel can also reach Telegram if needed.
 
 ### Out-of-band decisions captured here
 
@@ -188,7 +194,7 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 - Firefox / Safari / Edge support. Chrome-only v1.
 - Images, attachments, or non-text content from the page.
 - Sending screenshots of the page.
-- Authentication beyond the Telegram bot token.
+- ~~Authentication beyond the Telegram bot token.~~ **Reversed by ADR-0008.** Phone-based MTProto authentication is now in scope; the bot token is no longer used.
 - Syncing config across browsers.
 - Live selection mirroring while the panel is open (dropped — see ADR).
 - Persistent draft notes across panel close / browser restart (in-memory only).
@@ -198,4 +204,4 @@ Good tests here exercise external behavior (inputs → outputs, observable side 
 
 - Project naming: the working title and repo name is **nano-dispatch**. The user-facing extension name should also be "nano-dispatch" unless the user decides otherwise before publishing.
 - The screenshot the user referenced (Claude.ai's right-hand sidebar with "Mention Tabs", selected text chip, and a "Write a message…" composer) is the visual reference for the side panel's shape and information density. Match that pattern: small header showing the source, a visible chip/block for the selection, a roomy composer, a single primary action.
-- No backend. The extension talks directly to `api.telegram.org`. The Telegram bot token's exposure surface is the user's own browser profile; that's an accepted trade-off for the no-infra design.
+- No backend. The extension talks directly to Telegram's MTProto endpoints (`*.web.telegram.org` over WebSocket). The Telegram session string's exposure surface is the user's own browser profile — a larger blast radius than the bot token it replaced (a leaked session string allows reading all DMs and posting as the user), accepted as the cost of the no-infra design. See ADR-0008 for the threat-model delta.

@@ -1,22 +1,19 @@
 # Telegram dispatch — protocol & security
 
 Companion to `PRD.md`. The PRD is the *what*; this doc is the *how* for the
-Telegram dispatch path — the only place in the extension where the bot token
-lives, is read, and is used. Security invariants and protocol details live
-together here on purpose: future readers see the constraints right where they'd
-be tempted to violate them.
+Telegram dispatch path — the only place in the extension where the Telegram
+session string lives, is read, and is used. Security invariants and protocol
+details live together here on purpose: future readers see the constraints
+right where they'd be tempted to violate them.
 
-> **As-built note (2026-05-19).** The dispatcher's payload field is named
-> `bodyHtml`, not `bodyMarkdown`, and the `## Page` section now carries raw
-> `document.body.innerHTML` rather than Markdown extracted via Readability +
-> Turndown. The PRD's User Stories #25 and #26 were dropped in favour of
-> simpler capture — see [`adr/0006-raw-html-capture.md`](adr/0006-raw-html-capture.md).
-> The rest of this document (composition, splitting, error mapping, token
-> handling, security invariants) is accurate as-built.
-
-> Status: draft. Sections marked **[from sending thread]** are placeholders for
-> the parallel discussion about how we send to Telegram and should be filled in
-> as those decisions land.
+> **As-built note (2026-05-19).** The dispatcher was rewritten in
+> [ADR-0008](adr/0008-mtproto-user-dispatch.md) to use MTProto user-account
+> dispatch via [GramJS](adr/0009-gramjs-mtproto-library.md) instead of the
+> Bot API. The transport seam is now the `Sender` port
+> ([ADR-0010](adr/0010-dispatcher-sender-port.md)), the credential is a
+> session string instead of a bot token, and the build is bundled with
+> esbuild ([ADR-0011](adr/0011-esbuild-bundler.md)). The composition and
+> document-attachment sections of this doc are unchanged.
 
 ---
 
@@ -25,10 +22,10 @@ be tempted to violate them.
 This document covers:
 
 - The dispatcher module's public contract.
-- Message composition, splitting, and error mapping.
-- How the bot token is stored, accessed, and protected.
+- Message composition, document attachment, and error mapping.
+- How the Telegram session string is stored, accessed, and protected.
 - Cross-cutting extension security invariants that any module touching the
-  token (or the user's selection) must uphold.
+  session (or the user's selection) must uphold.
 
 It does **not** cover the side-panel UI, the content-script extractor, or
 service-worker plumbing beyond what's needed to keep the token safe.
@@ -40,20 +37,25 @@ service-worker plumbing beyond what's needed to keep the token safe.
 Single entry point:
 
 ```ts
-dispatch(payload, config): Promise<DispatchResult>
+dispatch(payload, config, sender): Promise<DispatchResult>
 
 payload: { url: string, title: string, selection?: string, note?: string, bodyHtml: string }
-config:  { botToken: string, chatId: string }
+config:  { apiId: number, apiHash: string, session: string, peer: string }
+sender:  Sender  // see ADR-0010
 
 DispatchResult =
   | { ok: true,  messageIds: number[] }
-  | { ok: false, reason: 'unauthorized' | 'bad_chat' | 'network' | 'rate_limited' | 'unknown', detail: string }
+  | { ok: false, reason: 'unauthorized' | 'bad_chat' | 'network' | 'rate_limited' | 'unknown' | 'no_access' | 'restricted_page', detail: string }
 ```
 
-Responsibilities: compose the message body, split on the 4096-character limit,
-call `api.telegram.org/bot<token>/sendMessage`, normalize errors. Zero DOM,
-zero `chrome.*` — just `fetch` and plain data. Lives in its own file so it
-can be unit-tested under Node/Vitest.
+Responsibilities: compose the message as a caption + standalone HTML
+document, call `sender.sendDocument(...)`, normalise errors. Zero DOM, zero
+`chrome.*`, zero GramJS — just the `Sender` port and plain data. Lives in
+its own file so it can be unit-tested under Node/Vitest.
+
+The production `Sender` adapter (`src/dispatcher/gramjs-sender.ts`) wraps
+GramJS's `TelegramClient.sendFile`. The adapter is the only file in the
+extension that imports the `telegram` package.
 
 The dispatcher is **only** ever invoked from the service worker. Never from a
 content script. See §6.
@@ -138,15 +140,23 @@ every part is ≤ 4096 chars.
 
 ## 5. Error mapping
 
-Telegram API errors are normalised to the discriminants in §2:
+The GramJS adapter surfaces RPC errors to the dispatcher as plain `Error`s
+whose `message` is the bare TL error name. The dispatcher classifies:
 
-| HTTP / condition                          | `reason`         | Notes                                           |
-| ----------------------------------------- | ---------------- | ----------------------------------------------- |
-| `401 Unauthorized`                        | `unauthorized`   | Bad bot token. Surface "check options" in UI.   |
-| `400` with `chat not found` in `description` | `bad_chat`    | Wrong chat ID, or bot not in chat.              |
-| `429 Too Many Requests`                   | `rate_limited`   | Include `retry_after` from response in `detail`.|
-| `fetch` rejects (network down, DNS, etc.) | `network`        |                                                 |
-| Anything else                             | `unknown`        | Stuff the raw `description` in `detail`.        |
+| GramJS error message                              | `reason`         | Notes                                                              |
+| ------------------------------------------------- | ---------------- | ------------------------------------------------------------------ |
+| `AUTH_KEY_UNREGISTERED`                           | `unauthorized`   | Session string is invalid or revoked. Sign in again via Options.   |
+| `PEER_ID_INVALID`                                 | `bad_chat`       | Recipient (peer) is wrong or the bot has been deleted.             |
+| `FLOOD_WAIT_<n>`                                  | `rate_limited`   | `detail = "retry_after=<n>"`. No automatic backoff in stage 1.     |
+| `NETWORK_ERROR: ...` (prefixed by adapter)        | `network`        | Adapter wraps transport-level failures (connect, socket, timeout). |
+| Anything else                                     | `unknown`        | Original message preserved in `detail`.                            |
+
+The adapter's contract is that classifiable RPC errors arrive as their bare
+TL names (no `RPCError(420):` wrapping, no `[telegram]:` prefix). If a
+future GramJS release changes the error shape, the adapter
+(`src/dispatcher/gramjs-sender.ts`) is the only file that needs updating —
+the dispatcher's `classify()` keeps working as long as it sees the bare
+names.
 
 On **partial-success splits** (part 1 sent, part 2 fails): the PRD's "no retry
 queue" decision applies. The dispatcher returns `{ ok: false, reason, detail }`
@@ -169,65 +179,79 @@ Draft is preserved either way (PRD user story #21).
 
 ---
 
-## 6. Token handling
+## 6. Session handling
 
 ### 6.1 Threat model
 
-A leaked bot token gives an attacker full impersonation via the Bot API:
+A leaked Telegram **session string** gives an attacker full impersonation
+of the user's Telegram account:
 
-- Send arbitrary messages to every chat the bot is in.
-- Read DMs to the bot and messages in groups it has access to.
-- For nano-dispatch specifically: inject crafted "dispatches" into the
-  downstream LLM agent (`nanoclaw`). The token is therefore not only a
-  credential but also a **prompt-injection vector** into the agent.
+- Read all of the user's DMs (history + new messages).
+- Post as the user in every chat they're in, including private groups.
+- Add or remove the user from groups; join new ones.
+- Read 2FA-protected message history (the session is post-2FA).
+- For nano-dispatch specifically: also inject crafted "dispatches" into the
+  downstream LLM agent (`nanoclaw`). The session is therefore both a
+  credential and a **prompt-injection vector** into the agent — same as
+  the bot token it replaced, but with a far larger account-impersonation
+  blast radius.
 
-Telegram has no token disable — only rotation via `/revoke` in @BotFather.
-Rotation is the kill switch.
+The kill switch is Telegram's own "Active Sessions" UI (Settings → Devices
+in any Telegram client). Clicking **Sign out** in the extension's Options
+page only removes the session from `chrome.storage.local` — it does not
+revoke the server-side record. After a suspected leak the user should do
+**both**.
 
 ### 6.2 Storage choice: `chrome.storage.local`
 
-- **Not `chrome.storage.sync`** — would replicate the token through Google's
-  servers to every Chrome profile signed in to the same Google account.
-  Chrome's own docs: "local and sync storage areas should not store
-  confidential user data because they are not encrypted."
-- **Not `chrome.storage.session`** — in-memory only; would force the user to
-  re-paste the token after every browser restart. Kills PRD user story #17
-  ("paste once").
-- **`chrome.storage.local`** is unencrypted on disk inside the user's Chrome
-  profile. Accepted trade-off: an attacker who can read the profile directory
-  can already read saved passwords, cookies, and session tokens — the
-  marginal exposure of the bot token is small *given the rest of the threat
-  model on the same machine*. We don't have an OS-keychain option from an
-  extension.
+Unchanged from the bot-token era:
+
+- **Not `chrome.storage.sync`** — would replicate the session through
+  Google's servers to every Chrome profile signed in to the same Google
+  account. Chrome's own docs: "local and sync storage areas should not
+  store confidential user data because they are not encrypted."
+- **Not `chrome.storage.session`** — in-memory only; would force the user
+  to re-authenticate after every browser restart.
+- **`chrome.storage.local`** is unencrypted on disk inside the user's
+  Chrome profile. Accepted trade-off: an attacker who can read the profile
+  directory can already read saved passwords, cookies, and other session
+  tokens — the Telegram session adds to that pool but doesn't change its
+  character. We don't have an OS-keychain option from an extension.
 
 ### 6.3 Module-isolation invariants
 
 These are hard rules. Any change that violates them is a security regression.
 
-1. **The token is read only from the service worker.** The side-panel UI and
-   options page may *write* the token (via the settings store wrapper); only
-   the service worker may *read* it for dispatch.
-2. **The content script never sees the token.** The capture step (an
+1. **The session is read only from the service worker** (for dispatch) **and
+   the options page** (for sign-in/sign-out). The side-panel UI never reads
+   it.
+2. **The content script never sees the session.** The capture step (an
    inline `func` injected via `chrome.scripting.executeScript`) returns
    `{ url, title, selection, bodyHtml }` to the service worker. The
-   service worker reads the token from storage and calls Telegram. There must
-   be no import path from the content-script bundle to the settings store.
-3. **The token never appears in a `chrome.runtime.sendMessage` payload to or
-   from a content script.** This follows from #2 but is worth stating: even
-   passing the token through the service worker into a content-script call
-   is forbidden.
-4. **The token is never logged.** Not in `console.log`, not in error
-   `detail` strings surfaced to the UI, not in any analytics. `unauthorized`
-   as a discriminant is enough for the user to act.
+   service worker reads the session from storage and constructs the GramJS
+   client. There must be no import path from the content-script bundle to
+   the settings store.
+3. **The session never appears in a `chrome.runtime.sendMessage` payload to
+   or from a content script.** This follows from #2 but is worth stating.
+4. **The session is never logged.** Not in `console.log`, not in error
+   `detail` strings surfaced to the UI, not in any analytics. The
+   `unauthorized` discriminant is enough for the user to act.
+5. **GramJS is imported only by the production sender adapter and the
+   options page auth flow.** The dispatcher core, the side panel, and the
+   content-script capture path must remain GramJS-free.
 
 ### 6.4 Rotation / incident response
 
-The options page should include a one-line note:
+The Options page includes a one-line note:
 
-> If this token may have leaked, run `/revoke` in @BotFather to rotate it,
-> then paste the new token here.
+> The extension stores your Telegram session string in local extension
+> storage. Anyone with read access to this Chrome profile can read your
+> DMs and post as you. If you suspect leakage, click **Sign out** and
+> re-authenticate to invalidate the session.
 
-No automated rotation. No telemetry on token-related errors.
+For a confirmed leak the user must *also* terminate the session in
+Telegram's own client (Settings → Devices → Terminate session). No
+automated rotation. No telemetry on auth errors.
 
 ---
 
@@ -238,13 +262,15 @@ data) in the same module.
 
 ### 7.1 Host permissions
 
-Manifest `host_permissions`: **`https://api.telegram.org/*` only.** No
-`<all_urls>`, no broader Telegram domains. `activeTab` + `scripting` cover
-per-tab content access on user gesture.
+Manifest `host_permissions`: **`https://*.web.telegram.org/*` and
+`wss://*.web.telegram.org/*` only.** MTProto over WebSocket runs through
+these endpoints. No `<all_urls>`, no broader Telegram domains.
+`activeTab` + `scripting` cover per-tab content access on user gesture.
 
-Why this protects the token: a compromised content script cannot exfiltrate
-the token to an attacker-controlled origin via the extension's fetch
-permissions — the service worker's fetches are scoped to Telegram.
+Why this protects the session: a compromised content script cannot
+exfiltrate the session to an attacker-controlled origin via the
+extension's fetch/WebSocket permissions — the service worker's network
+surface is scoped to Telegram.
 
 ### 7.2 Content Security Policy
 
@@ -282,16 +308,15 @@ OWASP browser-extension cheat-sheet item: "Avoid using `eval()` and
 
 ### 7.5 Options UI
 
-- Render the token field as `<input type="password">`.
-- Do not echo the token elsewhere in the UI (no "saved: 1234…abcd" preview).
-- On dispatch errors, surface the `reason` discriminant, not the underlying
-  Telegram response body.
+- Render the `api_hash` and 2FA password fields as `<input type="password">`.
+- The session string is never displayed back to the user. The signed-in
+  banner shows only "Signed in." plus a Sign-out button — no username,
+  no preview.
+- On dispatch errors, surface the `reason` discriminant, not the raw
+  GramJS error message.
 - No in-options "Test connection" verifier — the first real Send returns
   the same mapped `reason` discriminants and is the supported diagnostic
-  path. (See ADR-0007.) If a future iteration re-introduces a verifier, it
-  must display only public API-derived metadata (bot `username`, chat
-  `title`/`first_name`) and never echo or hint at the token, with the
-  verification rendered in a panel separate from the token input.
+  path (ADR-0007).
 
 ---
 
@@ -322,4 +347,5 @@ on invariant #6.3.2.
 - Chrome — [chrome.storage API reference](https://developer.chrome.com/docs/extensions/reference/api/storage)
 - Chrome — [Stay secure](https://developer.chrome.com/docs/extensions/develop/security-privacy/stay-secure)
 - OWASP — [Browser Extension Vulnerabilities Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Browser_Extension_Vulnerabilities_Cheat_Sheet.html)
-- GitGuardian — [Remediating Telegram Bot Token leaks](https://www.gitguardian.com/remediation/telegram-bot-token)
+- GramJS — [Project page](https://gram.js.org)
+- Telegram — [Active Sessions / session termination](https://telegram.org/faq#q-i-have-questions-about-account-security)

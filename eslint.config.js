@@ -4,7 +4,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', '.claude/**'],
+    ignores: ['dist/**', 'node_modules/**', '.claude/**', 'build-shims/**', 'scripts/**/*.mjs'],
   },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

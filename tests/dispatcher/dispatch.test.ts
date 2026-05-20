@@ -1,36 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import { dispatch } from '../../src/dispatcher/dispatch.js';
-import type { DispatchPayload, DispatchConfig } from '../../src/dispatcher/types.js';
+import type { DispatchPayload, DispatchConfig, Sender } from '../../src/dispatcher/types.js';
 
-type Call = { url: string; form: FormData };
+type Call = Parameters<Sender['sendDocument']>[0];
 
-function stubFetch(responses: readonly (Response | Error)[]) {
+function stubSender(responses: readonly ({ messageId: number } | Error)[]): {
+  sender: Sender;
+  calls: Call[];
+} {
   const calls: Call[] = [];
   let i = 0;
-  const fn: typeof fetch = (input, init) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
-    const body = init?.body;
-    if (!(body instanceof FormData)) {
-      return Promise.reject(new Error('expected FormData body'));
-    }
-    calls.push({ url, form: body });
-    const next = responses[i] ?? responses[responses.length - 1];
-    i += 1;
-    if (next === undefined) return Promise.reject(new Error('no stub response'));
-    if (next instanceof Error) return Promise.reject(next);
-    return Promise.resolve(next.clone());
+  const sender: Sender = {
+    sendDocument: (input) => {
+      calls.push(input);
+      const next = responses[i] ?? responses[responses.length - 1];
+      i += 1;
+      if (next === undefined) return Promise.reject(new Error('no stub response'));
+      if (next instanceof Error) return Promise.reject(next);
+      return Promise.resolve(next);
+    },
   };
-  return { fn, calls };
+  return { sender, calls };
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
+const config: DispatchConfig = {
+  apiId: 12345,
+  apiHash: 'HASH',
+  session: 'SESSION',
+  peer: '@nanoclaw',
+};
 
-const config: DispatchConfig = { botToken: 'TKN', chatId: 'CHAT' };
 const payload: DispatchPayload = {
   url: 'https://example.com/post',
   title: 'Hello',
@@ -38,94 +37,63 @@ const payload: DispatchPayload = {
 };
 
 describe('dispatch', () => {
-  it('posts a single sendDocument with chat_id, caption, and the HTML body as a file', async () => {
-    const { fn, calls } = stubFetch([jsonResponse({ ok: true, result: { message_id: 42 } })]);
+  it('sends one document with the composed caption + HTML body to the configured peer', async () => {
+    const { sender, calls } = stubSender([{ messageId: 42 }]);
 
-    const result = await dispatch(payload, config, fn);
+    const result = await dispatch(payload, config, sender);
 
     expect(result).toEqual({ ok: true, messageIds: [42] });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('https://api.telegram.org/botTKN/sendDocument');
 
-    const form = calls[0]!.form;
-    expect(form.get('chat_id')).toBe('CHAT');
-    expect(form.get('caption')).toBe('source: browser\n\nHello\nhttps://example.com/post');
+    const call = calls[0]!;
+    expect(call.peer).toBe('@nanoclaw');
+    expect(call.caption).toBe('source: browser\n\nHello\nhttps://example.com/post');
+    expect(call.fileName).toBe('hello.html');
+    expect(call.mimeType).toBe('text/html');
 
-    const doc = form.get('document');
-    expect(doc).toBeInstanceOf(File);
-    if (doc instanceof File) {
-      expect(doc.name).toBe('hello.html');
-      expect(doc.type).toBe('text/html');
-      const text = await doc.text();
-      expect(text.startsWith('<!doctype html>')).toBe(true);
-      expect(text).toContain('<p>a page</p>');
-    }
+    const text = new TextDecoder().decode(call.fileBytes);
+    expect(text.startsWith('<!doctype html>')).toBe(true);
+    expect(text).toContain('<p>a page</p>');
   });
 
-  it('sends a long page in one request (no chunking)', async () => {
-    const longPage = 'long '.repeat(20000); // ~100k chars — would have been many sendMessage parts
-    const { fn, calls } = stubFetch([jsonResponse({ ok: true, result: { message_id: 7 } })]);
-
-    const result = await dispatch({ ...payload, bodyHtml: longPage }, config, fn);
-
-    expect(result).toEqual({ ok: true, messageIds: [7] });
-    expect(calls).toHaveLength(1);
-  });
-
-  it('maps 401 → unauthorized', async () => {
-    const { fn } = stubFetch([
-      jsonResponse({ ok: false, error_code: 401, description: 'Unauthorized' }, 401),
-    ]);
-    const result = await dispatch(payload, config, fn);
+  it('maps AUTH_KEY_UNREGISTERED → unauthorized', async () => {
+    const { sender } = stubSender([new Error('AUTH_KEY_UNREGISTERED')]);
+    const result = await dispatch(payload, config, sender);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('unauthorized');
   });
 
-  it('maps 400 with "chat not found" → bad_chat', async () => {
-    const { fn } = stubFetch([
-      jsonResponse({ ok: false, error_code: 400, description: 'Bad Request: chat not found' }, 400),
-    ]);
-    const result = await dispatch(payload, config, fn);
+  it('maps PEER_ID_INVALID → bad_chat', async () => {
+    const { sender } = stubSender([new Error('PEER_ID_INVALID')]);
+    const result = await dispatch(payload, config, sender);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('bad_chat');
   });
 
-  it('maps 429 → rate_limited and includes retry_after in detail', async () => {
-    const { fn } = stubFetch([
-      jsonResponse(
-        {
-          ok: false,
-          error_code: 429,
-          description: 'Too Many Requests',
-          parameters: { retry_after: 7 },
-        },
-        429,
-      ),
-    ]);
-    const result = await dispatch(payload, config, fn);
+  it('maps FLOOD_WAIT_<n> → rate_limited and surfaces the wait seconds', async () => {
+    const { sender } = stubSender([new Error('FLOOD_WAIT_30')]);
+    const result = await dispatch(payload, config, sender);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('rate_limited');
-      expect(result.detail).toContain('retry_after=7');
+      expect(result.detail).toContain('retry_after=30');
     }
   });
 
-  it('maps fetch rejection → network', async () => {
-    const { fn } = stubFetch([new Error('network down')]);
-    const result = await dispatch(payload, config, fn);
+  it('maps NETWORK_ERROR (transport failure from the Sender adapter) → network', async () => {
+    const { sender } = stubSender([new Error('NETWORK_ERROR: ECONNREFUSED')]);
+    const result = await dispatch(payload, config, sender);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('network');
   });
 
-  it('falls through to "unknown" for unrecognised error responses', async () => {
-    const { fn } = stubFetch([
-      jsonResponse({ ok: false, error_code: 500, description: 'Internal Server Error' }, 500),
-    ]);
-    const result = await dispatch(payload, config, fn);
+  it('falls through to unknown and preserves the original message in detail', async () => {
+    const { sender } = stubSender([new Error('INTERNAL_SERVER_ERROR')]);
+    const result = await dispatch(payload, config, sender);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('unknown');
-      expect(result.detail).toContain('Internal Server Error');
+      expect(result.detail).toContain('INTERNAL_SERVER_ERROR');
     }
   });
 });

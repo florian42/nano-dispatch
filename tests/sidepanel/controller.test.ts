@@ -22,7 +22,7 @@ function makePorts(initial?: Partial<StubState>): { ports: SidePanelPorts; state
   const state: StubState = {
     tab: { id: 7, title: 'Example post', url: 'https://example.com/post' },
     access: { kind: 'ok', selection: '' },
-    config: { botToken: 'TKN', chatId: 'CHAT' },
+    config: { apiId: 1, apiHash: 'HASH', session: 'SESSION', peer: '@nanoclaw' },
     sendReply: { ok: true, messageIds: [1] },
     sentMessages: [],
     openOptionsCalls: 0,
@@ -205,7 +205,7 @@ describe('side-panel controller', () => {
     expect(status?.textContent).toMatch(/toolbar icon/i);
   });
 
-  it('on restricted_page failure: shows the can\'t-be-captured hint', async () => {
+  it("on restricted_page failure: shows the can't-be-captured hint", async () => {
     const user = userEvent.setup();
     const root = makeRoot();
     const { ports } = makePorts({

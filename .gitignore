@@ -18,6 +18,7 @@ config.local.*
 bot-token*
 token.txt
 chat-id.txt
+.scripts-state/
 
 # ── Node / build artifacts ──────────────────────────────────────────
 node_modules/

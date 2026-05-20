@@ -1,64 +1,50 @@
-import type { DispatchPayload, DispatchConfig, DispatchResult, FailureReason } from './types.js';
+import type {
+  DispatchPayload,
+  DispatchConfig,
+  DispatchResult,
+  FailureReason,
+  Sender,
+} from './types.js';
 import { composeCaption, composeDocument, documentFilename } from './compose.js';
-
-type FetchFn = typeof fetch;
-
-type TelegramOk = { ok: true; result: { message_id: number } };
-type TelegramErr = {
-  ok: false;
-  error_code?: number;
-  description?: string;
-  parameters?: { retry_after?: number };
-};
-type TelegramResponse = TelegramOk | TelegramErr;
 
 export async function dispatch(
   payload: DispatchPayload,
   config: DispatchConfig,
-  fetchImpl: FetchFn = fetch,
+  sender: Sender,
 ): Promise<DispatchResult> {
-  const url = `https://api.telegram.org/bot${config.botToken}/sendDocument`;
-  const form = new FormData();
-  form.append('chat_id', config.chatId);
-  form.append('caption', composeCaption(payload));
-  const blob = new Blob([composeDocument(payload)], { type: 'text/html' });
-  form.append('document', blob, documentFilename(payload));
-
-  let res: Response;
+  const fileBytes = new TextEncoder().encode(composeDocument(payload));
   try {
-    res = await fetchImpl(url, { method: 'POST', body: form });
-  } catch {
-    return { ok: false, reason: 'network', detail: 'fetch failed' };
+    const { messageId } = await sender.sendDocument({
+      peer: config.peer,
+      fileBytes,
+      fileName: documentFilename(payload),
+      mimeType: 'text/html',
+      caption: composeCaption(payload),
+    });
+    return { ok: true, messageIds: [messageId] };
+  } catch (err) {
+    const msg = errorMessage(err);
+    const reason = classify(msg);
+    const detail = reason === 'rate_limited' ? formatFloodDetail(msg) : msg;
+    return { ok: false, reason, detail };
   }
-
-  let parsed: TelegramResponse;
-  try {
-    parsed = (await res.json()) as TelegramResponse;
-  } catch {
-    return { ok: false, reason: 'unknown', detail: `http ${res.status}` };
-  }
-
-  if (parsed.ok) {
-    return { ok: true, messageIds: [parsed.result.message_id] };
-  }
-
-  const reason = classifyError(res.status, parsed);
-  return { ok: false, reason, detail: formatErrorDetail(reason, parsed) };
 }
 
-function classifyError(status: number, body: TelegramErr): FailureReason {
-  if (status === 401) return 'unauthorized';
-  if (status === 429) return 'rate_limited';
-  if (status === 400 && (body.description ?? '').toLowerCase().includes('chat not found')) {
-    return 'bad_chat';
-  }
+function classify(msg: string): FailureReason {
+  if (msg === 'AUTH_KEY_UNREGISTERED') return 'unauthorized';
+  if (msg === 'PEER_ID_INVALID') return 'bad_chat';
+  if (/^FLOOD_WAIT_\d+$/.test(msg)) return 'rate_limited';
+  if (msg.startsWith('NETWORK_ERROR')) return 'network';
   return 'unknown';
 }
 
-function formatErrorDetail(reason: FailureReason, body: TelegramErr): string {
-  if (reason === 'rate_limited') {
-    const retry = body.parameters?.retry_after;
-    return retry !== undefined ? `retry_after=${retry}` : 'rate limited';
-  }
-  return body.description ?? 'no description';
+function formatFloodDetail(msg: string): string {
+  const match = /^FLOOD_WAIT_(\d+)$/.exec(msg);
+  return match ? `retry_after=${match[1]}` : msg;
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  return 'unknown error';
 }

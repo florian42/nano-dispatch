@@ -7,8 +7,10 @@ export type DispatchPayload = {
 };
 
 export type DispatchConfig = {
-  botToken: string;
-  chatId: string;
+  apiId: number;
+  apiHash: string;
+  session: string;
+  peer: string;
 };
 
 export type FailureReason =
@@ -23,3 +25,13 @@ export type FailureReason =
 export type DispatchResult =
   | { ok: true; messageIds: number[] }
   | { ok: false; reason: FailureReason; detail: string };
+
+export interface Sender {
+  sendDocument(input: {
+    peer: string;
+    fileBytes: Uint8Array;
+    fileName: string;
+    mimeType: string;
+    caption: string;
+  }): Promise<{ messageId: number }>;
+}

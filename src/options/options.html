@@ -10,14 +10,19 @@
         color-scheme: light dark;
       }
       body {
-        max-width: 520px;
+        max-width: 560px;
         margin: 32px auto;
         padding: 0 16px;
-        line-height: 1.4;
+        line-height: 1.45;
       }
       h1 {
         font-size: 18px;
         margin-bottom: 4px;
+      }
+      h2 {
+        font-size: 14px;
+        margin-top: 28px;
+        margin-bottom: 6px;
       }
       .subtitle {
         color: #6b7280;
@@ -26,7 +31,7 @@
       }
       label {
         display: block;
-        margin-bottom: 16px;
+        margin-bottom: 12px;
         font-size: 13px;
         font-weight: 600;
       }
@@ -48,19 +53,29 @@
         background: #1d4ed8;
         color: white;
         border: 1px solid #1d4ed8;
+        margin-right: 8px;
       }
-      #status {
+      button.secondary {
+        background: transparent;
+        color: #374151;
+        border-color: #d1d5db;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .status {
         margin-top: 16px;
         padding: 10px 12px;
         border-radius: 6px;
         background: #f3f4f6;
         font-size: 13px;
       }
-      #status.error {
+      .status.error {
         background: #fee2e2;
         color: #991b1b;
       }
-      #status.ok {
+      .status.ok {
         background: #d1fae5;
         color: #065f46;
       }
@@ -74,29 +89,83 @@
         padding: 1px 4px;
         border-radius: 3px;
       }
+      .hidden {
+        display: none;
+      }
+      .signed-in {
+        padding: 10px 12px;
+        background: #ecfdf5;
+        border: 1px solid #a7f3d0;
+        border-radius: 6px;
+        font-size: 13px;
+        margin-bottom: 16px;
+      }
     </style>
   </head>
   <body>
     <h1>nano-dispatch</h1>
-    <p class="subtitle">Configure your Telegram bot. Saved locally; never synced.</p>
+    <p class="subtitle">
+      Configure your Telegram user-account dispatch. Stored locally; never synced.
+    </p>
+
+    <div id="signed-in-banner" class="signed-in hidden">
+      Signed in. <button id="sign-out" class="secondary" type="button">Sign out</button>
+    </div>
+
+    <h2>App credentials</h2>
+    <p class="footnote" style="margin-top: 0; margin-bottom: 12px">
+      Register an app at <code>my.telegram.org/apps</code> to get these.
+    </p>
 
     <label>
-      Bot token
-      <input id="bot-token" type="password" placeholder="123456:abc..." autocomplete="off" />
+      api_id
+      <input
+        id="api-id"
+        type="text"
+        inputmode="numeric"
+        placeholder="12345678"
+        autocomplete="off"
+      />
     </label>
 
     <label>
-      Chat ID
-      <input id="chat-id" type="text" placeholder="-1001234567890 or 123456" autocomplete="off" />
+      api_hash
+      <input id="api-hash" type="password" placeholder="hexadecimal hash" autocomplete="off" />
     </label>
 
-    <button id="save" type="button">Save</button>
+    <label>
+      Recipient (bot username or numeric ID)
+      <input id="peer" type="text" placeholder="@nanoclaw_bot" autocomplete="off" />
+    </label>
 
-    <div id="status" hidden></div>
+    <h2 id="auth-section-heading">Sign in to Telegram</h2>
+    <div id="auth-step-phone">
+      <label>
+        Your phone number (international format)
+        <input id="phone" type="tel" placeholder="+14155552671" autocomplete="off" />
+      </label>
+      <button id="send-code" type="button">Send code</button>
+    </div>
+
+    <div id="auth-step-code" class="hidden">
+      <label>
+        Login code (from Telegram)
+        <input id="code" type="text" inputmode="numeric" placeholder="12345" autocomplete="off" />
+      </label>
+      <label>
+        Two-factor password (only if you've set one — leave blank otherwise)
+        <input id="password" type="password" autocomplete="off" />
+      </label>
+      <button id="submit-code" type="button">Sign in</button>
+      <button id="cancel-code" class="secondary" type="button">Cancel</button>
+    </div>
+
+    <div id="status" class="status" hidden></div>
 
     <p class="footnote">
-      If this token may have leaked, run <code>/revoke</code> in <code>@BotFather</code> to rotate
-      it, then paste the new token here.
+      The extension stores your Telegram <em>session string</em> in local extension storage. Anyone
+      with read access to this Chrome profile can read your DMs and post as you. If you suspect
+      leakage, click <strong>Sign out</strong> and re-authenticate to invalidate the session.
     </p>
 
     <script type="module" src="./options/options.js"></script>

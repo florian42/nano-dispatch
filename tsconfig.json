@@ -19,5 +19,5 @@
     "verbatimModuleSyntax": false,
     "noEmit": true
   },
-  "include": ["src", "tests", "build.mjs", "vitest.config.ts"]
+  "include": ["src", "tests", "scripts", "build.mjs", "vitest.config.ts"]
 }

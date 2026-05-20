@@ -8,10 +8,8 @@ export interface SidePanelHandle {
   ready: Promise<void>;
 }
 
-const NEEDS_ACTIVATION_HINT =
-  'Click the nano-dispatch toolbar icon on this tab to enable it here.';
-const RESTRICTED_HINT =
-  "This page can't be captured (chrome://, Web Store, file://, etc.).";
+const NEEDS_ACTIVATION_HINT = 'Click the nano-dispatch toolbar icon on this tab to enable it here.';
+const RESTRICTED_HINT = "This page can't be captured (chrome://, Web Store, file://, etc.).";
 
 export function mountSidePanel(root: HTMLElement, ports: SidePanelPorts): SidePanelHandle {
   root.innerHTML = SIDEPANEL_TEMPLATE;

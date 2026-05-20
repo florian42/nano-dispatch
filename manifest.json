@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "nano-dispatch",
   "version": "0.1.0",
-  "description": "Dispatch the page you're reading — title, URL, your highlight, and a note — to a Telegram bot.",
+  "description": "Dispatch the page you're reading — title, URL, your highlight, and a note — as your Telegram user account, to a bot.",
   "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs"],
-  "host_permissions": ["https://api.telegram.org/*"],
+  "host_permissions": ["https://*.web.telegram.org/*", "wss://*.web.telegram.org/*"],
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
@@ -17,6 +17,6 @@
   },
   "options_page": "options.html",
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://*.web.telegram.org wss://*.web.telegram.org"
   }
 }
