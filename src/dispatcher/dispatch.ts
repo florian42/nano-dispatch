@@ -3,25 +3,48 @@ import type {
   DispatchConfig,
   DispatchResult,
   FailureReason,
+  OutgoingDocument,
   Sender,
 } from './types.js';
-import { composeCaption, composeDocument, documentFilename } from './compose.js';
+import {
+  composeCaption,
+  composePageDocument,
+  composeSelectionCaption,
+  composeSelectionDocument,
+  pageFilename,
+  selectionFilename,
+} from './compose.js';
 
 export async function dispatch(
   payload: DispatchPayload,
   config: DispatchConfig,
   sender: Sender,
 ): Promise<DispatchResult> {
-  const fileBytes = new TextEncoder().encode(composeDocument(payload));
-  try {
-    const { messageId } = await sender.sendDocument({
-      peer: config.peer,
-      fileBytes,
-      fileName: documentFilename(payload),
+  const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+  const files: OutgoingDocument[] = [
+    {
+      fileBytes: encode(composePageDocument(payload)),
+      fileName: pageFilename(payload),
       mimeType: 'text/html',
       caption: composeCaption(payload),
+    },
+  ];
+
+  // Ship the highlight as its own file so it survives in full, with a
+  // role-tagged filename + header the agent can key off.
+  if (payload.selection && payload.selection.length > 0) {
+    files.push({
+      fileBytes: encode(composeSelectionDocument(payload)),
+      fileName: selectionFilename(payload),
+      mimeType: 'text/plain',
+      caption: composeSelectionCaption(payload),
     });
-    return { ok: true, messageIds: [messageId] };
+  }
+
+  try {
+    const { messageIds } = await sender.sendDocuments({ peer: config.peer, files });
+    return { ok: true, messageIds };
   } catch (err) {
     const msg = errorMessage(err);
     const reason = classify(msg);

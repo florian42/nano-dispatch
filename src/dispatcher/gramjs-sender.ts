@@ -36,21 +36,39 @@ export async function createGramSender(opts: {
   }
 
   return {
-    async sendDocument({ peer, fileBytes, fileName, caption }) {
+    async sendDocuments({ peer, files }) {
       // GramJS's CustomFile is the cross-platform path: a browser `File`
       // works in the browser build but is rejected by GramJS's `_fileToMedia`
       // in Node ("Cannot use [object File] as file."). CustomFile carries a
       // Buffer payload that works in both. The mime type is inferred from
-      // the file extension by Telegram — for our .html attachments that
-      // resolves to text/html.
-      const file = new CustomFile(fileName, fileBytes.length, '', Buffer.from(fileBytes));
+      // the file extension by Telegram — .html → text/html, .txt → text/plain.
+      const customFiles = files.map(
+        (f) => new CustomFile(f.fileName, f.fileBytes.length, '', Buffer.from(f.fileBytes)),
+      );
       try {
-        const message = await client.sendFile(peer, {
-          file,
-          caption,
+        // One file: a plain document. Two or more: pass arrays for `file`
+        // and `caption` and GramJS routes through messages.SendMultiMedia,
+        // delivering them as a single album with one caption per file.
+        const [onlyFile] = customFiles;
+        const [onlySpec] = files;
+        if (customFiles.length === 1 && onlyFile && onlySpec) {
+          const message = await client.sendFile(peer, {
+            file: onlyFile,
+            caption: onlySpec.caption,
+            forceDocument: true,
+          });
+          return { messageIds: [message.id] };
+        }
+        const result = (await client.sendFile(peer, {
+          file: customFiles,
+          caption: files.map((f) => f.caption),
           forceDocument: true,
-        });
-        return { messageId: message.id };
+        })) as unknown;
+        // An album send resolves to an array of messages, one per file.
+        const messages: { id: number }[] = Array.isArray(result)
+          ? (result as { id: number }[])
+          : [];
+        return { messageIds: messages.map((m) => m.id) };
       } catch (err) {
         throw normaliseError(err);
       }

@@ -12,8 +12,10 @@ right where they'd be tempted to violate them.
 > Bot API. The transport seam is now the `Sender` port
 > ([ADR-0010](adr/0010-dispatcher-sender-port.md)), the credential is a
 > session string instead of a bot token, and the build is bundled with
-> esbuild ([ADR-0011](adr/0011-esbuild-bundler.md)). The composition and
-> document-attachment sections of this doc are unchanged.
+> esbuild ([ADR-0011](adr/0011-esbuild-bundler.md)). Composition was
+> reworked again in [ADR-0013](adr/0013-two-file-page-and-selection.md):
+> the page and the selection now ship as two separate files in one media
+> group rather than one HTML document with the selection baked in — see §3.
 
 ---
 
@@ -48,8 +50,8 @@ DispatchResult =
   | { ok: false, reason: 'unauthorized' | 'bad_chat' | 'network' | 'rate_limited' | 'unknown' | 'no_access' | 'restricted_page', detail: string }
 ```
 
-Responsibilities: compose the message as a caption + standalone HTML
-document, call `sender.sendDocument(...)`, normalise errors. Zero DOM, zero
+Responsibilities: compose the message as a caption plus one or two document
+files, call `sender.sendDocuments(...)`, normalise errors. Zero DOM, zero
 `chrome.*`, zero GramJS — just the `Sender` port and plain data. Lives in
 its own file so it can be unit-tested under Node/Vitest.
 
@@ -64,77 +66,91 @@ content script. See §6.
 
 ## 3. Message composition
 
-The wrapper (source tag, headings, separators) is Markdown-shaped but sent
-**without** `parse_mode` set — Telegram treats it as plain text and does not
-attempt to render or validate it. The consumer of the bot's chat is an LLM
-agent; Telegram is just the transport. This sidesteps Telegram's MarkdownV2
-escaping rules entirely.
+A dispatch is a **caption plus one or two document files**, sent as a single
+Telegram media group (album). See [ADR-0013](adr/0013-two-file-page-and-selection.md)
+for why the selection is its own file rather than baked into the page HTML.
 
-The `## Page` section contains raw HTML (`document.body.innerHTML` of the
-captured tab) — see ADR-0006. The agent is responsible for parsing it.
+Captions are sent **without** `parse_mode` set — Telegram treats them as
+plain text and does not render or validate them. The consumer of the bot's
+chat is an LLM agent; Telegram is just the transport. This sidesteps
+MarkdownV2 escaping rules entirely.
 
-Layout:
+### Files
 
-```
-source: browser
+| File                  | When            | MIME         | Contents                                                  |
+| --------------------- | --------------- | ------------ | --------------------------------------------------------- |
+| `page-<slug>.html`    | always          | `text/html`  | Standalone HTML doc: title, url, optional note, then raw `document.body.innerHTML` (ADR-0006). |
+| `selection-<slug>.txt`| selection present | `text/plain` | The **full** highlighted text, with a `role: selection` header block. |
 
-# <title>
-<url>
+The filename prefix (`page-` / `selection-`) **and** an in-file role marker
+both identify each file, so the agent never has to infer role from content:
 
-## Selection
-<selection text, or section omitted entirely if empty>
+- Page file: `<meta name="x-dispatch-role" content="page">` in `<head>` and a
+  `source: browser (role: page)` line in the body header.
+- Selection file: a header block before the highlight —
 
-## Note
-<user note, or section omitted entirely if empty>
+  ```
+  source: browser
+  role: selection
+  title: <title>
+  url: <url>
 
-## Page
-<bodyHtml>
-```
+  <full selection text>
+  ```
 
-- The first line is a fixed `source: browser` tag — a machine-readable marker
-  the downstream agent keys off to recognise browser-originated dispatches.
-- `## Selection` and `## Note` sections are omitted entirely when their content
-  is empty (not rendered as empty headers).
-- `## Page` is always present when `bodyHtml` is non-empty.
+The selection is **never** duplicated into the page HTML. The note stays
+inline in the page document (so a note too long for the caption survives in
+full) and is also previewed in the caption.
 
-## 4. Splitting
+### Captions
 
-If the assembled body exceeds **4096 characters** (Telegram's per-message
-limit), the dispatcher chunks the composed body as a single character
-stream. See ADR-0005 for the algorithm rationale.
+Each file in the album carries its own caption, shown beneath it. The caption
+is what the downstream agent reads **first**, before opening any attachment, so
+each one describes how the pieces relate. We *describe* the parts; we do not
+*instruct* the agent what to do with them — that intent lives in the user's
+note.
 
-Procedure:
+- **Page file caption** — the summary, leading with the machine-readable tag,
+  and (when a highlight is present) a trailing line naming the selection file:
 
-1. Compose the body via `composeBody`.
-2. If the result is ≤ 4096 chars, send as one message (no `(n/N)` marker).
-3. Otherwise, strip the leading `source: browser\n\n`, chunk the remainder
-   with a **4032-char budget**, and prepend `source: browser\n(n/N)\n\n`
-   to each chunk.
+  ```
+  source: browser
 
-The chunker prefers `\n\n` (paragraph) then `\n` (line) boundaries, but
-only when they sit in the upper half of the budget — otherwise it hard-
-cuts at the budget. This keeps part 1 from being truncated to "frame only"
-when the page body has no internal paragraph breaks.
+  <title>
+  <url>
 
-Rules:
+  <note, omitted when empty>
 
-1. Per-part header budget is fixed at **64 chars** (`source: browser\n(n/N)\n\n`
-   even at N=99 fits comfortably). Effective body budget per part = **4032**.
-2. The `source: browser` tag is repeated on every part so each chunk is
-   independently identifiable in the chat.
-3. The `(n/N)` marker appears **only when N ≥ 2**. Single-part sends do not
-   carry it.
-4. **No trailing `(end)` marker.** `(n/N)` with `n == N` already signals the
-   last part; a redundant marker adds noise.
+  — the user highlighted part of this page; the exact text is attached as selection-<slug>.txt
+  ```
 
-Parts are sent **sequentially**, not in parallel — order matters for the
-reader, and Telegram's rate limits are friendlier to serial sends.
+  The selection pointer line is present **only when a selection exists**. The
+  note is truncated with `…` if the caption would exceed Telegram's
+  **1024-char** caption limit; the head and the (small) selection pointer are
+  kept intact and the note is trimmed to fit. The full note still lives in the
+  page document.
 
-Because the frame (`# Title`, `<url>`, `## Selection`, `## Note`,
-`## Page`) sits at the top of the composed body, it naturally lands in
-part 1 and is never repeated. Pathological inputs (e.g. a 6000-char
-selection) still deliver: the chunker keeps cutting at the budget until
-every part is ≤ 4096 chars.
+- **Selection file caption** — describes the attached text and points back to
+  the page file for context, so the agent knows this excerpt is the user's
+  highlight and not the whole page:
+
+  ```
+  source: browser
+  role: selection
+
+  This file is the exact text the user highlighted on the page.
+  The full page is page-<slug>.html; the user's note (if any) rides in that file's caption.
+  ```
+
+### Why no splitting
+
+Earlier versions chunked a single composed body across many `sendMessage`
+calls and tripped Telegram's per-chat rate limits on long pages. Sending the
+page as a file attachment (and now the selection as a second file) removes
+the size ceiling entirely: a media-group upload is **one** logical send
+regardless of page or selection length, so there is no `(n/N)` chunking and
+US-13 ("no silent truncation") holds for arbitrarily large content. ADR-0005
+(the old splitter) is retained for history only.
 
 ---
 

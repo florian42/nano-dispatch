@@ -17,3 +17,4 @@ judge edge cases.
 - [0010 — Dispatcher takes an injectable `Sender` port](./0010-dispatcher-sender-port.md) — **supersedes 0001 for the transport seam**
 - [0011 — Add esbuild for bundling](./0011-esbuild-bundler.md)
 - [0012 — Browser/SW polyfill architecture for GramJS](./0012-browser-polyfill-architecture.md)
+- [0013 — Ship the page and selection as two files in one media group](./0013-two-file-page-and-selection.md) — **amends 0006; changes the ADR-0010 `Sender` port**
